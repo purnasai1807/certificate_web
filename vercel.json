@@ -27,9 +27,7 @@
   ],
   "functions": {
     "api/index.py": {
-      "includeFiles": [
-        "public/fonts/**"
-      ]
+      "includeFiles": "public/fonts/**"
     }
   }
 }

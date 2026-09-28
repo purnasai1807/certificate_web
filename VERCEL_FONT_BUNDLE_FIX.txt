@@ -1,10 +1,9 @@
-FONT BUNDLE FIX
+Vercel font bundle fix
 
-The Python Vercel Function explicitly includes public/fonts/** via vercel.json.
-This is required because the PDF renderer runs inside the Python serverless function;
-frontend static assets being available does not guarantee the same files are packaged
-inside the Python Function.
+The Python function needs the bundled certificate fonts at runtime.
+Vercel's vercel.json schema expects functions.includeFiles to be a single glob-pattern string, not an array.
 
-All bundled certificate fonts remain in public/fonts and are used by the PDF renderer.
-Noto Sans Hebrew and the other 40 families are therefore available to the server-side
-PDF generator after deployment.
+Configured:
+  functions -> api/index.py -> includeFiles = "public/fonts/**"
+
+This keeps the 160 bundled TTF font files available to the Python certificate renderer.
