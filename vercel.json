@@ -1,8 +1,12 @@
 {
+  "version": 2,
   "builds": [
     {
       "src": "api/index.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": ["public/fonts/**"]
+      }
     },
     {
       "src": "package.json",
@@ -24,10 +28,5 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ],
-  "functions": {
-    "api/index.py": {
-      "includeFiles": "public/fonts/**"
-    }
-  }
+  ]
 }
