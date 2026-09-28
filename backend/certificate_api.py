@@ -1193,13 +1193,20 @@ def lookup_certificate_by_identifier(identifier):
 
 
 def _approve_generate_send(item, comment=""):
-    """Approve a pending certificate, generate its PDF, and email it.
+    """Complete the certificate workflow idempotently.
 
-    This is the single production workflow used by the admin approval action.
-    Every stage persists its state so failures are visible and retryable.
+    A previous attempt can legitimately leave a certificate in APPROVED,
+    GENERATED, or FAILED after a later stage failed.  Retrying the button must
+    resume that workflow instead of rejecting it as "not pending".
+    SENT is the only terminal state for this action.
     """
-    if item.get("status") != "PENDING":
-        raise ValueError("Only pending certificates can be approved.")
+    status = str(item.get("status") or "PENDING").upper()
+    if status == "SENT":
+        raise ValueError("This certificate has already been sent to the participant's email.")
+    if status in {"REJECTED", "CANCELLED"}:
+        raise ValueError(f"Certificate is {status.lower()} and cannot be approved.")
+    if status not in {"PENDING", "APPROVED", "GENERATED", "FAILED"}:
+        raise ValueError(f"Certificate is in an unsupported state: {status}.")
 
     participant_name = str(item.get("participantName") or "").strip()
     participant_email = str(item.get("participantEmail") or "").strip()
@@ -1208,40 +1215,46 @@ def _approve_generate_send(item, comment=""):
     if not participant_email or "@" not in participant_email:
         raise ValueError("Participant email is missing or invalid; approval was stopped.")
 
-    item.update({
-        "status": "APPROVED",
-        "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"),
-        "approvedAt": _now(),
-        "approvalComment": comment or "",
-        "failureReason": "",
-    })
-    _save_state()
-    _audit("CERTIFICATE_APPROVED", item["certificateId"])
-
-    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
-    template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
-    if not template:
-        item.update({"status": "FAILED", "failureReason": "Certificate template not found. Upload and activate a certificate template first."})
-        _save_state()
-        raise RuntimeError(item["failureReason"])
-
-    try:
-        # Free-plan housekeeping runs before creating another BYTEA PDF so an
-        # already-full Neon project can recover before the new certificate is stored.
-        _prune_certificate_storage()
-        file_key = _render_certificate(item, template)
+    # A retry of a partially completed workflow must preserve its existing
+    # approval/generation state and continue from the failed stage.
+    if status in {"PENDING", "FAILED"}:
         item.update({
-            "status": "GENERATED",
-            "generatedAt": _now(),
-            "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download",
-            "templateId": template.get("id", template_id),
-            "templateName": template.get("name", ""),
+            "status": "APPROVED",
+            "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"),
+            "approvedAt": item.get("approvedAt") or _now(),
+            "approvalComment": comment or item.get("approvalComment", ""),
             "failureReason": "",
         })
         _save_state()
-        _audit("CERTIFICATE_GENERATED", item["certificateId"])
+        _audit("CERTIFICATE_APPROVED", item["certificateId"])
 
-        stored_certificate = db.load_file(file_key)
+    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+    template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
+
+    try:
+        file_key = f"certificate:{item['certificateId']}"
+        stored_certificate = db.load_file(file_key) if status == "GENERATED" else None
+
+        if not stored_certificate:
+            if not template:
+                item.update({"status": "FAILED", "failureReason": "Certificate template not found. Upload and activate a certificate template first."})
+                _save_state()
+                raise RuntimeError(item["failureReason"])
+            # Free-plan housekeeping runs before creating another BYTEA PDF so an
+            # already-full Neon project can recover before the new certificate is stored.
+            _prune_certificate_storage()
+            file_key = _render_certificate(item, template)
+            item.update({
+                "status": "GENERATED",
+                "generatedAt": _now(),
+                "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download",
+                "templateId": template.get("id", template_id),
+                "templateName": template.get("name", ""),
+                "failureReason": "",
+            })
+            _save_state()
+            _audit("CERTIFICATE_GENERATED", item["certificateId"])
+            stored_certificate = db.load_file(file_key)
         if not stored_certificate:
             raise RuntimeError("Generated certificate file is not available to attach.")
 
