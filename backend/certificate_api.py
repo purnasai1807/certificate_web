@@ -1098,12 +1098,14 @@ def update_template_fields(template_id):
     item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
     if not item:
         return _error("NOT_FOUND", "Template not found.", 404)
-    fields = (request.get_json(silent=True) or {}).get("fields")
+    body = request.get_json(silent=True) or {}
+    fields = body.get("fields")
+    create_version = bool(body.get("createVersion", True))
     if not isinstance(fields, list):
         return _error("INVALID_FIELDS", "Fields must be an array.", 422)
 
     previous = item.get("fields") or []
-    if previous != fields:
+    if previous != fields and create_version:
         versions = item.setdefault("versions", [])
         versions.insert(0, {
             "id": f"ver_{uuid.uuid4().hex[:10]}",
@@ -1274,7 +1276,7 @@ def _approve_generate_send(item, comment=""):
         _save_state()
         _audit("CERTIFICATE_APPROVED", item["certificateId"])
 
-    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+    template_id = portal_state.get("settings", {}).get("activeTemplateId") or item.get("templateId") or ""
     template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
 
     try:
@@ -1452,7 +1454,7 @@ def bulk_generate():
         try:
             if item.get("status") not in ("APPROVED", "FAILED"):
                 raise ValueError("Certificate must be approved before generation.")
-            template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+            template_id = portal_state.get("settings", {}).get("activeTemplateId") or item.get("templateId") or ""
             template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
             if not template:
                 raise RuntimeError("Certificate template not found.")
@@ -1481,6 +1483,8 @@ def _field_font_name(field):
     family = family_aliases.get(family, family)
     style = str(field.get("fontStyle") or "normal").strip().lower()
     weight = str(field.get("fontWeight") or "normal").strip().lower()
+    # The bundle provides regular/bold/italic/bold-italic faces. Medium and
+    # semibold use the closest bundled face while retaining the requested italic flag.
     bold = weight in {"bold", "semibold"} or style in {"bold", "bold italic"}
     italic = style in {"italic", "bold italic"}
     families = {
@@ -1530,7 +1534,9 @@ def _field_font_name(field):
     candidate = base + suffix
     if candidate in pdfmetrics.getRegisteredFontNames():
         return candidate
-    return base if base in pdfmetrics.getRegisteredFontNames() else "Helvetica"
+    if base in pdfmetrics.getRegisteredFontNames():
+        return base
+    raise RuntimeError(f"Certificate font '{family}' is not available in the deployed font bundle.")
 
 
 def _draw_field(overlay, field, value, width, height):
@@ -1662,12 +1668,19 @@ def _render_certificate(item, template):
 
 
 def _current_template_for_certificate(item):
-    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+    # Unsent certificates always use the currently active template. This prevents
+    # an older templateId on a certificate record from silently overriding the
+    # design the administrator is currently editing.
+    active_id = str(portal_state.get("settings", {}).get("activeTemplateId") or "").strip()
+    fallback_id = str(item.get("templateId") or "").strip()
+    template_id = active_id or fallback_id
     template = next((t for t in portal_state.get("templates", []) if t.get("id") == template_id), None)
     if not template:
         raise RuntimeError("Certificate template not found. Upload and activate a certificate template first.")
     if not db.load_file(f"template:{template['id']}"):
         raise RuntimeError("Template file not found in persistent storage.")
+    item["templateId"] = template["id"]
+    item["templateName"] = template.get("name", "")
     return template
 
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Award,
@@ -49,6 +49,9 @@ export const TemplateEditorPage: React.FC = () => {
   const [exactPreviewUrl, setExactPreviewUrl] = useState<string | null>(null);
   const [versions, setVersions] = useState<Array<{ id: string; createdAt: string; fields: TemplateFieldConfig[] }>>([]);
   const [isRestoringVersion, setIsRestoringVersion] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const editorLoadedRef = useRef(false);
+  const autoSaveTimerRef = useRef<number | null>(null);
   const [settings, setSettings] = useState<SystemSettings>({ eventName: '', organizationName: '', certificateIdPrefix: 'CERT', issueDate: '', activeTemplateId: '', requireCheckIn: true, requireCheckOut: true, senderName: '', replyToAddress: '', emailSubject: '', emailBodyTemplate: '' });
 
   useEffect(() => {
@@ -62,6 +65,7 @@ export const TemplateEditorPage: React.FC = () => {
         const active = tpls.find((t) => t.active) || tpls[0] || null;
         setTemplate(active);
         setSelectedFieldId(active?.fields[0]?.id || null);
+        editorLoadedRef.current = !!active;
         if (active) {
           const versionRes = await templatesService.getVersions(active.id);
           if (versionRes.success) setVersions(versionRes.data || []);
@@ -89,6 +93,24 @@ export const TemplateEditorPage: React.FC = () => {
   useEffect(() => () => {
     if (exactPreviewUrl) URL.revokeObjectURL(exactPreviewUrl);
   }, [exactPreviewUrl]);
+
+  useEffect(() => {
+    if (!template || !editorLoadedRef.current) return;
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = window.setTimeout(async () => {
+      try {
+        setIsAutoSaving(true);
+        await templatesService.updateTemplateFields(template.id, template.fields, false);
+      } catch {
+        // Explicit Save remains available if autosave fails.
+      } finally {
+        setIsAutoSaving(false);
+      }
+    }, 900);
+    return () => {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [template]);
 
   const currentField = template?.fields.find((f) => f.id === selectedFieldId) || null;
   const sampleParticipant = sampleParticipants.find((p) => p.id === selectedParticipantId) || sampleParticipants[0];
@@ -191,7 +213,7 @@ export const TemplateEditorPage: React.FC = () => {
     }
     setIsSaving(true);
     try {
-      const res = await templatesService.updateTemplateFields(template.id, template.fields);
+      const res = await templatesService.updateTemplateFields(template.id, template.fields, true);
       if (res.success) {
         const versionRes = await templatesService.getVersions(template.id);
         if (versionRes.success) setVersions(versionRes.data || []);
@@ -412,6 +434,7 @@ export const TemplateEditorPage: React.FC = () => {
           <div className="flex items-center justify-between text-xs text-slate-400 px-2">
             <span>Click any text to activate coordinate handles</span>
             <span className="font-mono">Aspect Ratio: {Number(template.pageWidth || 842).toFixed(0)} × {Number(template.pageHeight || 595).toFixed(0)}</span>
+            {isAutoSaving && <span className="text-purple-500 font-semibold">Saving layout…</span>}
           </div>
 
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm space-y-2">

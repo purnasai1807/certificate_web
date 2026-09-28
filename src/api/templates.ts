@@ -21,10 +21,10 @@ export const templatesService = {
     return apiClient<{ templateId: string; active: boolean }>(`/templates/${id}/activate`, { method: 'POST' });
   },
 
-  updateTemplateFields(templateId: string, fields: TemplateFieldConfig[]) {
+  updateTemplateFields(templateId: string, fields: TemplateFieldConfig[], createVersion = true) {
     return apiClient<CertificateTemplate>(`/templates/${templateId}/fields`, {
       method: 'PUT',
-      body: JSON.stringify({ fields }),
+      body: JSON.stringify({ fields, createVersion }),
     });
   },
 
