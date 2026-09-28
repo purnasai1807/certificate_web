@@ -1278,16 +1278,11 @@ def _approve_generate_send(item, comment=""):
     template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
 
     try:
-        file_key = f"certificate:{item['certificateId']}"
-        stored_certificate = db.load_file(file_key) if status == "GENERATED" else None
-
-        if not stored_certificate:
-            if not template:
-                item.update({"status": "FAILED", "failureReason": "Certificate template not found. Upload and activate a certificate template first."})
-                _save_state()
-                raise RuntimeError(item["failureReason"])
-            # Free-plan housekeeping runs before creating another BYTEA PDF so an
-            # already-full Neon project can recover before the new certificate is stored.
+        # Always render a fresh PDF before sending an unsent certificate. This
+        # is critical when an admin changed coordinates, font family, size, style,
+        # weight, alignment or color after an earlier PDF was generated.
+        if status != "SENT":
+            template = _current_template_for_certificate(item)
             _prune_certificate_storage()
             file_key = _render_certificate(item, template)
             item.update({
@@ -1300,7 +1295,9 @@ def _approve_generate_send(item, comment=""):
             })
             _save_state()
             _audit("CERTIFICATE_GENERATED", item["certificateId"])
-            stored_certificate = db.load_file(file_key)
+        else:
+            file_key = f"certificate:{item['certificateId']}"
+        stored_certificate = db.load_file(file_key)
         if not stored_certificate:
             raise RuntimeError("Generated certificate file is not available to attach.")
 
@@ -1471,7 +1468,17 @@ def bulk_generate():
 
 
 def _field_font_name(field):
-    family = str(field.get("fontFamily") or "Inter")
+    # Keep the PDF renderer tolerant of both the current font labels and older
+    # saved labels such as "Cinzel (Formal Capital)".
+    family = str(field.get("fontFamily") or "Inter").strip()
+    family_aliases = {
+        "Cinzel (Formal Capital)": "Cinzel",
+        "Playfair Display (Serif)": "Playfair Display",
+        "Plus Jakarta Sans (Modern Clean)": "Plus Jakarta Sans",
+        "Inter (Clean Sans)": "Inter",
+        "Great Vibes (Calligraphic Signature)": "Great Vibes",
+    }
+    family = family_aliases.get(family, family)
     style = str(field.get("fontStyle") or "normal").strip().lower()
     weight = str(field.get("fontWeight") or "normal").strip().lower()
     bold = weight in {"bold", "semibold"} or style in {"bold", "bold italic"}
@@ -1645,10 +1652,23 @@ def _render_certificate_bytes(item, template):
 
 
 def _render_certificate(item, template):
+    # Every generation writes a fresh PDF from the currently saved template
+    # fields. Never reuse a stale PDF when the template typography/coordinates
+    # have been changed.
     output_bytes = _render_certificate_bytes(item, template)
     file_key = f"certificate:{item['certificateId']}"
     db.save_file(file_key, f"{item['certificateId']}.pdf", output_bytes, "application/pdf")
     return file_key
+
+
+def _current_template_for_certificate(item):
+    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+    template = next((t for t in portal_state.get("templates", []) if t.get("id") == template_id), None)
+    if not template:
+        raise RuntimeError("Certificate template not found. Upload and activate a certificate template first.")
+    if not db.load_file(f"template:{template['id']}"):
+        raise RuntimeError("Template file not found in persistent storage.")
+    return template
 
 
 @certificate_api.post("/templates/<template_id>/preview")
@@ -1862,9 +1882,26 @@ def send_certificate(certificate_id):
     if not str(item.get("participantEmail") or "").strip() or "@" not in str(item.get("participantEmail") or ""):
         return _error("INVALID_EMAIL", "Participant email is missing or invalid.", 422)
 
-    # A failed delivery can be retried using the same generated certificate.
-    if item["status"] == "FAILED":
-        item["status"] = "GENERATED"
+    # Re-render the PDF from the currently saved template before every unsent
+    # delivery. This guarantees the email attachment matches the template editor
+    # and Exact PDF Preview instead of an older cached/generated PDF.
+    try:
+        template = _current_template_for_certificate(item)
+        _prune_certificate_storage()
+        file_key = _render_certificate(item, template)
+        item.update({
+            "status": "GENERATED",
+            "generatedAt": _now(),
+            "templateId": template.get("id", item.get("templateId", "")),
+            "templateName": template.get("name", ""),
+            "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download",
+            "failureReason": "",
+        })
+        _save_state()
+    except (RuntimeError, OSError, ValueError) as exc:
+        item.update({"status": "FAILED", "failureReason": str(exc)})
+        _save_state()
+        return _error("CERTIFICATE_RENDER_FAILED", str(exc), 422)
 
     email_job_id = f"email_{uuid.uuid4().hex[:12]}"
     subject, body = _render_email_content(item)

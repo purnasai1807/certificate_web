@@ -1,5 +1,5 @@
 import { CertificateTemplate, TemplateFieldConfig } from '../types';
-import { apiClient, ApiResponse, getAuthToken } from './client';
+import { apiClient, ApiResponse, getAuthToken, API_BASE_URL } from './client';
 
 export const templatesService = {
   getTemplates(): Promise<ApiResponse<CertificateTemplate[]>> {

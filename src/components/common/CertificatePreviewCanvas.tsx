@@ -203,8 +203,20 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
                 fontSize: `${Math.max(1, Number(field.fontSize) || 1) * 96 / 72}px`,
                 lineHeight: 1,
                 whiteSpace: 'nowrap',
-                fontWeight: field.fontWeight === 'semibold' ? 600 : field.fontWeight === 'medium' ? 500 : field.fontWeight === 'bold' ? 700 : 400,
-                fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bold italic' ? 'italic' : 'normal',
+                // Match the PDF renderer exactly: "Bold" and "Bold Italic"
+                // in Font Style force bold weight; medium/semibold map to the
+                // same regular/bold faces available to the bundled TTF fonts.
+                fontWeight:
+                  field.fontWeight === 'bold' ||
+                  field.fontWeight === 'semibold' ||
+                  field.fontStyle === 'bold' ||
+                  field.fontStyle === 'bold italic'
+                    ? 700
+                    : 400,
+                fontStyle:
+                  field.fontStyle === 'italic' || field.fontStyle === 'bold italic'
+                    ? 'italic'
+                    : 'normal',
                 fontFamily: field.fontFamily,
                 color: field.color,
                 textAlign: field.textAlign,
