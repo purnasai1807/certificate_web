@@ -37,7 +37,7 @@ export interface TemplateFieldConfig {
   yPercent: number; // 0 to 100 percentage from top
   fontSize: number; // in pt / px
   fontWeight: 'normal' | 'medium' | 'semibold' | 'bold';
-  fontFamily: 'Cinzel' | 'Playfair Display' | 'Inter' | 'Plus Jakarta Sans' | 'Great Vibes';
+  fontFamily: 'Cinzel' | 'Playfair Display' | 'Inter' | 'Plus Jakarta Sans' | 'Great Vibes' | 'Amiri' | 'Open Sans' | 'Roboto' | 'Roboto Condensed' | 'Lato' | 'Andika' | 'Charis SIL' | 'Clear Sans' | 'Gentium Plus' | 'Liberation Sans' | 'Liberation Serif' | 'Liberation Mono' | 'Free Sans' | 'Free Serif' | 'Free Mono' | 'Noto Sans' | 'Noto Serif' | 'Noto Sans Devanagari' | 'Noto Serif Devanagari' | 'Noto Sans Telugu' | 'Noto Serif Telugu' | 'Noto Sans Tamil' | 'Noto Serif Tamil' | 'Noto Sans Bengali' | 'Noto Serif Bengali' | 'Noto Sans Malayalam' | 'Noto Serif Malayalam' | 'Noto Sans Kannada' | 'Noto Serif Kannada' | 'Noto Sans Gujarati' | 'Noto Serif Gujarati' | 'Noto Sans Thai' | 'Noto Serif Thai' | 'Noto Sans Arabic' | 'Noto Sans Hebrew';
   fontStyle?: 'normal' | 'italic' | 'bold' | 'bold italic';
   color: string;
   textAlign: 'left' | 'center' | 'right';

@@ -582,11 +582,46 @@ export const TemplateEditorPage: React.FC = () => {
                     }
                     className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
                   >
-                    <option value="Playfair Display">Playfair Display (Serif)</option>
-                    <option value="Cinzel">Cinzel (Formal Capital)</option>
-                    <option value="Plus Jakarta Sans">Plus Jakarta Sans (Modern Clean)</option>
-                    <option value="Inter">Inter (Clean Sans)</option>
-                    <option value="Great Vibes">Great Vibes (Calligraphic Signature)</option>
+                    <option value="Cinzel">Cinzel</option>
+                    <option value="Playfair Display">Playfair Display</option>
+                    <option value="Inter">Inter</option>
+                    <option value="Plus Jakarta Sans">Plus Jakarta Sans</option>
+                    <option value="Great Vibes">Great Vibes</option>
+                    <option value="Amiri">Amiri</option>
+                    <option value="Open Sans">Open Sans</option>
+                    <option value="Roboto">Roboto</option>
+                    <option value="Roboto Condensed">Roboto Condensed</option>
+                    <option value="Lato">Lato</option>
+                    <option value="Andika">Andika</option>
+                    <option value="Charis SIL">Charis SIL</option>
+                    <option value="Clear Sans">Clear Sans</option>
+                    <option value="Gentium Plus">Gentium Plus</option>
+                    <option value="Liberation Sans">Liberation Sans</option>
+                    <option value="Liberation Serif">Liberation Serif</option>
+                    <option value="Liberation Mono">Liberation Mono</option>
+                    <option value="Free Sans">Free Sans</option>
+                    <option value="Free Serif">Free Serif</option>
+                    <option value="Free Mono">Free Mono</option>
+                    <option value="Noto Sans">Noto Sans</option>
+                    <option value="Noto Serif">Noto Serif</option>
+                    <option value="Noto Sans Devanagari">Noto Sans Devanagari</option>
+                    <option value="Noto Serif Devanagari">Noto Serif Devanagari</option>
+                    <option value="Noto Sans Telugu">Noto Sans Telugu</option>
+                    <option value="Noto Serif Telugu">Noto Serif Telugu</option>
+                    <option value="Noto Sans Tamil">Noto Sans Tamil</option>
+                    <option value="Noto Serif Tamil">Noto Serif Tamil</option>
+                    <option value="Noto Sans Bengali">Noto Sans Bengali</option>
+                    <option value="Noto Serif Bengali">Noto Serif Bengali</option>
+                    <option value="Noto Sans Malayalam">Noto Sans Malayalam</option>
+                    <option value="Noto Serif Malayalam">Noto Serif Malayalam</option>
+                    <option value="Noto Sans Kannada">Noto Sans Kannada</option>
+                    <option value="Noto Serif Kannada">Noto Serif Kannada</option>
+                    <option value="Noto Sans Gujarati">Noto Sans Gujarati</option>
+                    <option value="Noto Serif Gujarati">Noto Serif Gujarati</option>
+                    <option value="Noto Sans Thai">Noto Sans Thai</option>
+                    <option value="Noto Serif Thai">Noto Serif Thai</option>
+                    <option value="Noto Sans Arabic">Noto Sans Arabic</option>
+                    <option value="Noto Sans Hebrew">Noto Sans Hebrew</option>
                   </select>
                 </div>
 

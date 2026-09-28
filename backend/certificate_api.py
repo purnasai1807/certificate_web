@@ -59,11 +59,46 @@ FONT_DIR = ROOT / "public" / "fonts"
 
 def _register_certificate_fonts():
     fonts = {
-        "CertCinzel": ("Cinzel-Regular.ttf", "Cinzel-Bold.ttf", "Cinzel-Italic.ttf", "Cinzel-BoldItalic.ttf"),
-        "CertPlayfair": ("PlayfairDisplay-Regular.ttf", "PlayfairDisplay-Bold.ttf", "PlayfairDisplay-Italic.ttf", "PlayfairDisplay-BoldItalic.ttf"),
-        "CertInter": ("Inter-Regular.ttf", "Inter-Bold.ttf", "Inter-Italic.ttf", "Inter-BoldItalic.ttf"),
-        "CertJakarta": ("PlusJakartaSans-Regular.ttf", "PlusJakartaSans-Bold.ttf", "PlusJakartaSans-Italic.ttf", "PlusJakartaSans-BoldItalic.ttf"),
-        "CertVibes": ("GreatVibes-Regular.ttf", "GreatVibes-Bold.ttf", "GreatVibes-Italic.ttf", "GreatVibes-BoldItalic.ttf"),
+        'CertCinzel': ('Cinzel-Regular.ttf', 'Cinzel-Bold.ttf', 'Cinzel-Italic.ttf', 'Cinzel-BoldItalic.ttf'),
+        'CertPlayfairDisplay': ('PlayfairDisplay-Regular.ttf', 'PlayfairDisplay-Bold.ttf', 'PlayfairDisplay-Italic.ttf', 'PlayfairDisplay-BoldItalic.ttf'),
+        'CertInter': ('Inter-Regular.ttf', 'Inter-Bold.ttf', 'Inter-Italic.ttf', 'Inter-BoldItalic.ttf'),
+        'CertPlusJakartaSans': ('PlusJakartaSans-Regular.ttf', 'PlusJakartaSans-Bold.ttf', 'PlusJakartaSans-Italic.ttf', 'PlusJakartaSans-BoldItalic.ttf'),
+        'CertGreatVibes': ('GreatVibes-Regular.ttf', 'GreatVibes-Bold.ttf', 'GreatVibes-Italic.ttf', 'GreatVibes-BoldItalic.ttf'),
+        'CertAmiri': ('Amiri-Regular.ttf', 'Amiri-Bold.ttf', 'Amiri-Italic.ttf', 'Amiri-BoldItalic.ttf'),
+        'CertOpenSans': ('OpenSans-Regular.ttf', 'OpenSans-Bold.ttf', 'OpenSans-Italic.ttf', 'OpenSans-BoldItalic.ttf'),
+        'CertRoboto': ('Roboto-Regular.ttf', 'Roboto-Bold.ttf', 'Roboto-Italic.ttf', 'Roboto-BoldItalic.ttf'),
+        'CertRobotoCondensed': ('RobotoCondensed-Regular.ttf', 'RobotoCondensed-Bold.ttf', 'RobotoCondensed-Italic.ttf', 'RobotoCondensed-BoldItalic.ttf'),
+        'CertLato': ('Lato-Regular.ttf', 'Lato-Bold.ttf', 'Lato-Italic.ttf', 'Lato-BoldItalic.ttf'),
+        'CertAndika': ('Andika-Regular.ttf', 'Andika-Bold.ttf', 'Andika-Italic.ttf', 'Andika-BoldItalic.ttf'),
+        'CertCharisSIL': ('CharisSIL-Regular.ttf', 'CharisSIL-Bold.ttf', 'CharisSIL-Italic.ttf', 'CharisSIL-BoldItalic.ttf'),
+        'CertClearSans': ('ClearSans-Regular.ttf', 'ClearSans-Bold.ttf', 'ClearSans-Italic.ttf', 'ClearSans-BoldItalic.ttf'),
+        'CertGentiumPlus': ('GentiumPlus-Regular.ttf', 'GentiumPlus-Bold.ttf', 'GentiumPlus-Italic.ttf', 'GentiumPlus-BoldItalic.ttf'),
+        'CertLiberationSans': ('LiberationSans-Regular.ttf', 'LiberationSans-Bold.ttf', 'LiberationSans-Italic.ttf', 'LiberationSans-BoldItalic.ttf'),
+        'CertLiberationSerif': ('LiberationSerif-Regular.ttf', 'LiberationSerif-Bold.ttf', 'LiberationSerif-Italic.ttf', 'LiberationSerif-BoldItalic.ttf'),
+        'CertLiberationMono': ('LiberationMono-Regular.ttf', 'LiberationMono-Bold.ttf', 'LiberationMono-Italic.ttf', 'LiberationMono-BoldItalic.ttf'),
+        'CertFreeSans': ('FreeSans-Regular.ttf', 'FreeSans-Bold.ttf', 'FreeSans-Italic.ttf', 'FreeSans-BoldItalic.ttf'),
+        'CertFreeSerif': ('FreeSerif-Regular.ttf', 'FreeSerif-Bold.ttf', 'FreeSerif-Italic.ttf', 'FreeSerif-BoldItalic.ttf'),
+        'CertFreeMono': ('FreeMono-Regular.ttf', 'FreeMono-Bold.ttf', 'FreeMono-Italic.ttf', 'FreeMono-BoldItalic.ttf'),
+        'CertNotoSans': ('NotoSans-Regular.ttf', 'NotoSans-Bold.ttf', 'NotoSans-Italic.ttf', 'NotoSans-BoldItalic.ttf'),
+        'CertNotoSerif': ('NotoSerif-Regular.ttf', 'NotoSerif-Bold.ttf', 'NotoSerif-Italic.ttf', 'NotoSerif-BoldItalic.ttf'),
+        'CertNotoSansDevanagari': ('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari-Bold.ttf', 'NotoSansDevanagari-Italic.ttf', 'NotoSansDevanagari-BoldItalic.ttf'),
+        'CertNotoSerifDevanagari': ('NotoSerifDevanagari-Regular.ttf', 'NotoSerifDevanagari-Bold.ttf', 'NotoSerifDevanagari-Italic.ttf', 'NotoSerifDevanagari-BoldItalic.ttf'),
+        'CertNotoSansTelugu': ('NotoSansTelugu-Regular.ttf', 'NotoSansTelugu-Bold.ttf', 'NotoSansTelugu-Italic.ttf', 'NotoSansTelugu-BoldItalic.ttf'),
+        'CertNotoSerifTelugu': ('NotoSerifTelugu-Regular.ttf', 'NotoSerifTelugu-Bold.ttf', 'NotoSerifTelugu-Italic.ttf', 'NotoSerifTelugu-BoldItalic.ttf'),
+        'CertNotoSansTamil': ('NotoSansTamil-Regular.ttf', 'NotoSansTamil-Bold.ttf', 'NotoSansTamil-Italic.ttf', 'NotoSansTamil-BoldItalic.ttf'),
+        'CertNotoSerifTamil': ('NotoSerifTamil-Regular.ttf', 'NotoSerifTamil-Bold.ttf', 'NotoSerifTamil-Italic.ttf', 'NotoSerifTamil-BoldItalic.ttf'),
+        'CertNotoSansBengali': ('NotoSansBengali-Regular.ttf', 'NotoSansBengali-Bold.ttf', 'NotoSansBengali-Italic.ttf', 'NotoSansBengali-BoldItalic.ttf'),
+        'CertNotoSerifBengali': ('NotoSerifBengali-Regular.ttf', 'NotoSerifBengali-Bold.ttf', 'NotoSerifBengali-Italic.ttf', 'NotoSerifBengali-BoldItalic.ttf'),
+        'CertNotoSansMalayalam': ('NotoSansMalayalam-Regular.ttf', 'NotoSansMalayalam-Bold.ttf', 'NotoSansMalayalam-Italic.ttf', 'NotoSansMalayalam-BoldItalic.ttf'),
+        'CertNotoSerifMalayalam': ('NotoSerifMalayalam-Regular.ttf', 'NotoSerifMalayalam-Bold.ttf', 'NotoSerifMalayalam-Italic.ttf', 'NotoSerifMalayalam-BoldItalic.ttf'),
+        'CertNotoSansKannada': ('NotoSansKannada-Regular.ttf', 'NotoSansKannada-Bold.ttf', 'NotoSansKannada-Italic.ttf', 'NotoSansKannada-BoldItalic.ttf'),
+        'CertNotoSerifKannada': ('NotoSerifKannada-Regular.ttf', 'NotoSerifKannada-Bold.ttf', 'NotoSerifKannada-Italic.ttf', 'NotoSerifKannada-BoldItalic.ttf'),
+        'CertNotoSansGujarati': ('NotoSansGujarati-Regular.ttf', 'NotoSansGujarati-Bold.ttf', 'NotoSansGujarati-Italic.ttf', 'NotoSansGujarati-BoldItalic.ttf'),
+        'CertNotoSerifGujarati': ('NotoSerifGujarati-Regular.ttf', 'NotoSerifGujarati-Bold.ttf', 'NotoSerifGujarati-Italic.ttf', 'NotoSerifGujarati-BoldItalic.ttf'),
+        'CertNotoSansThai': ('NotoSansThai-Regular.ttf', 'NotoSansThai-Bold.ttf', 'NotoSansThai-Italic.ttf', 'NotoSansThai-BoldItalic.ttf'),
+        'CertNotoSerifThai': ('NotoSerifThai-Regular.ttf', 'NotoSerifThai-Bold.ttf', 'NotoSerifThai-Italic.ttf', 'NotoSerifThai-BoldItalic.ttf'),
+        'CertNotoSansArabic': ('NotoSansArabic-Regular.ttf', 'NotoSansArabic-Bold.ttf', 'NotoSansArabic-Italic.ttf', 'NotoSansArabic-BoldItalic.ttf'),
+        'CertNotoSansHebrew': ('NotoSansHebrew-Regular.ttf', 'NotoSansHebrew-Bold.ttf', 'NotoSansHebrew-Italic.ttf', 'NotoSansHebrew-BoldItalic.ttf'),
     }
     for family, files in fonts.items():
         for suffix, filename in zip(("", "-Bold", "-Italic", "-BoldItalic"), files):
@@ -1431,11 +1466,46 @@ def _field_font_name(field):
     bold = weight in {"bold", "semibold"} or style in {"bold", "bold italic"}
     italic = style in {"italic", "bold italic"}
     families = {
-        "Cinzel": "CertCinzel",
-        "Playfair Display": "CertPlayfair",
-        "Inter": "CertInter",
-        "Plus Jakarta Sans": "CertJakarta",
-        "Great Vibes": "CertVibes",
+        'Cinzel': 'CertCinzel',
+        'Playfair Display': 'CertPlayfairDisplay',
+        'Inter': 'CertInter',
+        'Plus Jakarta Sans': 'CertPlusJakartaSans',
+        'Great Vibes': 'CertGreatVibes',
+        'Amiri': 'CertAmiri',
+        'Open Sans': 'CertOpenSans',
+        'Roboto': 'CertRoboto',
+        'Roboto Condensed': 'CertRobotoCondensed',
+        'Lato': 'CertLato',
+        'Andika': 'CertAndika',
+        'Charis SIL': 'CertCharisSIL',
+        'Clear Sans': 'CertClearSans',
+        'Gentium Plus': 'CertGentiumPlus',
+        'Liberation Sans': 'CertLiberationSans',
+        'Liberation Serif': 'CertLiberationSerif',
+        'Liberation Mono': 'CertLiberationMono',
+        'Free Sans': 'CertFreeSans',
+        'Free Serif': 'CertFreeSerif',
+        'Free Mono': 'CertFreeMono',
+        'Noto Sans': 'CertNotoSans',
+        'Noto Serif': 'CertNotoSerif',
+        'Noto Sans Devanagari': 'CertNotoSansDevanagari',
+        'Noto Serif Devanagari': 'CertNotoSerifDevanagari',
+        'Noto Sans Telugu': 'CertNotoSansTelugu',
+        'Noto Serif Telugu': 'CertNotoSerifTelugu',
+        'Noto Sans Tamil': 'CertNotoSansTamil',
+        'Noto Serif Tamil': 'CertNotoSerifTamil',
+        'Noto Sans Bengali': 'CertNotoSansBengali',
+        'Noto Serif Bengali': 'CertNotoSerifBengali',
+        'Noto Sans Malayalam': 'CertNotoSansMalayalam',
+        'Noto Serif Malayalam': 'CertNotoSerifMalayalam',
+        'Noto Sans Kannada': 'CertNotoSansKannada',
+        'Noto Serif Kannada': 'CertNotoSerifKannada',
+        'Noto Sans Gujarati': 'CertNotoSansGujarati',
+        'Noto Serif Gujarati': 'CertNotoSerifGujarati',
+        'Noto Sans Thai': 'CertNotoSansThai',
+        'Noto Serif Thai': 'CertNotoSerifThai',
+        'Noto Sans Arabic': 'CertNotoSansArabic',
+        'Noto Sans Hebrew': 'CertNotoSansHebrew',
     }
     base = families.get(family, "CertInter")
     suffix = "-BoldItalic" if bold and italic else "-Bold" if bold else "-Italic" if italic else ""
@@ -1715,9 +1785,25 @@ def _send_via_brevo(item, stored_certificate, subject, body):
 
 
 def _send_via_smtp(item, stored_certificate, subject, body):
-    host, port = os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", "587"))
-    if not host or not os.getenv("SMTP_USERNAME") or not os.getenv("SMTP_PASSWORD"):
+    """Send through SMTP only when SMTP is completely configured.
+
+    Never call int() on an empty SMTP_PORT value: Vercel environments often
+    contain an empty/optional variable, and that used to turn a missing SMTP
+    fallback into an unrelated HTTP 500 error.
+    """
+    host = (os.getenv("SMTP_HOST") or "").strip()
+    username = (os.getenv("SMTP_USERNAME") or "").strip()
+    password = os.getenv("SMTP_PASSWORD") or ""
+    if not host or not username or not password:
         return False
+
+    raw_port = (os.getenv("SMTP_PORT") or "587").strip()
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        raise RuntimeError("SMTP_PORT must be a valid number, for example 587.")
+    if not 1 <= port <= 65535:
+        raise RuntimeError("SMTP_PORT must be between 1 and 65535.")
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = os.getenv("SMTP_FROM", os.getenv("SMTP_USERNAME"))
@@ -1736,7 +1822,7 @@ def _send_via_smtp(item, stored_certificate, subject, body):
     )
     with smtplib.SMTP(host, port, timeout=20) as smtp:
         smtp.starttls()
-        smtp.login(os.getenv("SMTP_USERNAME"), os.getenv("SMTP_PASSWORD"))
+        smtp.login(username, password)
         smtp.send_message(message)
     return True
 
@@ -1747,7 +1833,10 @@ def _deliver_certificate_email(item, stored_certificate, subject, body):
         return
     if _send_via_smtp(item, stored_certificate, subject, body):
         return
-    raise RuntimeError("Email delivery is not configured.")
+    raise RuntimeError(
+        "Email delivery is not configured. Set BREVO_API_KEY and BREVO_SENDER_EMAIL in Vercel "
+        "(recommended), or configure SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD and SMTP_PORT."
+    )
 
 
 
@@ -1791,10 +1880,13 @@ def send_certificate(certificate_id):
         job.update({"status": "SENT", "sentAt": _now()})
         item.update({"status": "SENT", "sentAt": job["sentAt"], "emailDeliveryStatus": "SENT"})
         _audit("EMAIL_SENT", item["certificateId"])
-    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+    except (OSError, smtplib.SMTPException, RuntimeError, ValueError) as exc:
         job.update({"status": "FAILED", "error": str(exc)})
         item.update({"status": "FAILED", "emailDeliveryStatus": "FAILED", "failureReason": str(exc)})
         _audit("EMAIL_FAILED", item["certificateId"], "FAILED", str(exc))
+        portal_state["emailJobs"].append(job)
+        _save_state()
+        return _error("EMAIL_DELIVERY_FAILED", str(exc), 502, {"emailJobId": email_job_id})
 
     portal_state["emailJobs"].append(job)
     _save_state()
@@ -1802,7 +1894,7 @@ def send_certificate(certificate_id):
         "certificateId": item["certificateId"],
         "status": item["status"],
         "emailJobId": email_job_id,
-    })
+    }, message=f"Certificate sent to {item['participantEmail']}.")
 
 
 @certificate_api.get("/email-jobs/<job_id>")
