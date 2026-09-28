@@ -10,6 +10,3 @@ coverage/
 __pycache__/
 *.pyc
 .vercel
-
-.vercel
-.env*

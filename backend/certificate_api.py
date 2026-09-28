@@ -1539,34 +1539,87 @@ def _field_font_name(field):
     raise RuntimeError(f"Certificate font '{family}' is not available in the deployed font bundle.")
 
 
-def _draw_field(overlay, field, value, width, height):
+def _find_font_for_char(ch, preferred_font):
+    """Find a registered font that can render a character, preferring the field font."""
+    candidates = [preferred_font, "CertInter", "CertNotoSans", "CertFreeSans", "CertFreeSerif"]
+    # Then try every registered font. This keeps script-specific fonts usable while
+    # preventing Latin names from disappearing when a script font has no Latin glyphs.
+    candidates.extend(n for n in pdfmetrics.getRegisteredFontNames() if n not in candidates)
+    for name in candidates:
+        try:
+            face = pdfmetrics.getFont(name).face
+            cmap = getattr(face, "charToGlyph", {})
+            if ch.isspace() or cmap.get(ord(ch), 0):
+                return name
+        except Exception:
+            continue
+    return preferred_font
+
+
+def _draw_text_with_fallback(overlay, text, x, y, font_name, font_size, alignment):
+    """Draw text while falling back per run when the selected font lacks glyphs."""
+    if not text:
+        return
+    runs = []
+    current_font = None
+    current_text = []
+    for ch in text:
+        f = _find_font_for_char(ch, font_name)
+        if f != current_font:
+            if current_text:
+                runs.append((current_font, "".join(current_text)))
+            current_font = f
+            current_text = [ch]
+        else:
+            current_text.append(ch)
+    if current_text:
+        runs.append((current_font, "".join(current_text)))
+
+    total_width = sum(pdfmetrics.stringWidth(t, f, font_size) for f, t in runs)
+    if alignment == "left":
+        start_x = x
+    elif alignment == "right":
+        start_x = x - total_width
+    else:
+        start_x = x - total_width / 2.0
+    cursor = start_x
+    for f, t in runs:
+        overlay.setFont(f, font_size)
+        overlay.drawString(cursor, y, t)
+        cursor += pdfmetrics.stringWidth(t, f, font_size)
+
+
+def _draw_field(overlay, field, value, width, height, logical_width=842.0, logical_height=595.0):
     if field.get("visible", True) is False or value == "":
         return
     raw_key = field.get("key") or field.get("fieldKey") or ""
     key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
     aliases = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}
     key = aliases.get(key, key)
-    x = max(0.0, min(100.0, float(field.get("xPercent", field.get("x", 50))))) / 100.0 * width
-    center_y = height - (max(0.0, min(100.0, float(field.get("yPercent", field.get("y", 50))))) / 100.0 * height)
+
+    # The editor stores positions on a fixed 842x595 logical canvas. Scale those
+    # coordinates to the actual PDF page instead of silently changing the design
+    # when the uploaded PDF uses a different point size.
+    sx = width / float(logical_width or 842.0)
+    sy = height / float(logical_height or 595.0)
+    x_pct = max(0.0, min(100.0, float(field.get("xPercent", field.get("x", 50))))) / 100.0
+    y_pct = max(0.0, min(100.0, float(field.get("yPercent", field.get("y", 50))))) / 100.0
+    x = x_pct * width
+    center_y = height - (y_pct * height)
     overlay.setFillColor(field.get("color", "#111827"))
     font_name = _field_font_name(field)
-    font_size = max(1.0, float(field.get("fontSize", 24)))
+    logical_font_size = max(1.0, float(field.get("fontSize", 24)))
+    font_size = logical_font_size * min(sx, sy)
     overlay.setFont(font_name, font_size)
     # The editor defines Y as the vertical center of the text box. ReportLab's
-    # drawString/drawCentredString use a baseline, so convert the center anchor
-    # to a baseline using the selected font's real ascent/descent metrics.
+    # drawString uses a baseline, so convert the center anchor using real metrics.
     try:
         ascent, descent = pdfmetrics.getAscentDescent(font_name, font_size)
         y = center_y - ((ascent + descent) / 2.0)
     except Exception:
         y = center_y - font_size * 0.35
-    alignment = field.get("textAlign", "center")
-    if alignment == "left":
-        overlay.drawString(x, y, value)
-    elif alignment == "right":
-        overlay.drawRightString(x, y, value)
-    else:
-        overlay.drawCentredString(x, y, value)
+    alignment = str(field.get("textAlign", "center") or "center").lower()
+    _draw_text_with_fallback(overlay, str(value), x, y, font_name, font_size, alignment)
 
 
 def _render_certificate_bytes(item, template):
@@ -1625,7 +1678,7 @@ def _render_certificate_bytes(item, template):
             raw_key = field.get("key") or field.get("fieldKey") or ""
             key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
             key = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}.get(key, key)
-            _draw_field(overlay, field, values.get(key, ""), width, height)
+            _draw_field(overlay, field, values.get(key, ""), width, height, float(template.get("pageWidth") or 842.0), float(template.get("pageHeight") or 595.0))
         overlay.showPage()
         overlay.save()
         packet.seek(0)
@@ -1649,7 +1702,7 @@ def _render_certificate_bytes(item, template):
             raw_key = field.get("key") or field.get("fieldKey") or ""
             key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
             key = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}.get(key, key)
-            _draw_field(overlay, field, values.get(key, ""), width, height)
+            _draw_field(overlay, field, values.get(key, ""), width, height, float(template.get("pageWidth") or 842.0), float(template.get("pageHeight") or 595.0))
         overlay.showPage()
         overlay.save()
         packet.seek(0)

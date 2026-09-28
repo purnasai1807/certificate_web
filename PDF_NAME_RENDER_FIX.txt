@@ -1,0 +1,13 @@
+PDF NAME RENDER FIX
+
+This version fixes two production PDF issues:
+1. The editor uses a 842x595 logical canvas. PDF fields are now scaled from that
+   same logical coordinate system to the actual PDF page dimensions, keeping X/Y
+   and font size consistent with the editor.
+2. Some script-specific fonts (for example Noto Sans Hebrew) do not contain
+   Latin glyphs. The browser editor can fall back to another font, but ReportLab
+   cannot. The PDF renderer now falls back per character/run to a registered
+   font when the selected family lacks a glyph, so names such as "A. Teja" are
+   rendered instead of disappearing.
+
+Exact PDF Preview and final certificate generation use the same renderer.
