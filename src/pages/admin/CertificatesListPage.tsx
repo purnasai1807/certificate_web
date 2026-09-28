@@ -234,6 +234,10 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
   // Bulk Approve
   const handleBulkApprove = async () => {
     if (selectedIds.length === 0) return;
+    if (selectedIds.length > 20) {
+      showToast('warning', 'Batch Limit', 'For the free database plan, send at most 20 certificates per batch. Select 20 or fewer and run another batch.');
+      return;
+    }
     setIsProcessingAction(true);
     try {
       const res = await certificatesService.bulkApproveCertificates(selectedIds);

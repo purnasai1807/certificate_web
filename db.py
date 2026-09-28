@@ -247,6 +247,54 @@ def delete_file(key):
             cur.execute("DELETE FROM certificate_portal_files WHERE key = %s", (str(key),))
 
 
+
+def list_file_metadata(prefix=None):
+    """Return lightweight metadata for stored files without loading BYTEA data."""
+    if not _use_postgres():
+        _fallback_init()
+        metadata = _fallback_load_metadata()
+        rows = []
+        for key, record in metadata.items():
+            if prefix and not str(key).startswith(str(prefix)):
+                continue
+            path = _FALLBACK_FILES_DIR / record.get("path", "")
+            rows.append({"key": str(key), "size": path.stat().st_size if path.exists() else 0, "created_at": ""})
+        return rows
+    init()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            if prefix:
+                cur.execute(
+                    "SELECT key, octet_length(data), created_at FROM certificate_portal_files WHERE key LIKE %s ORDER BY created_at ASC",
+                    (str(prefix) + "%",),
+                )
+            else:
+                cur.execute(
+                    "SELECT key, octet_length(data), created_at FROM certificate_portal_files ORDER BY created_at ASC"
+                )
+            return [
+                {"key": row[0], "size": int(row[1] or 0), "created_at": row[2].isoformat() if row[2] else ""}
+                for row in cur.fetchall()
+            ]
+
+def file_storage_usage(prefix=None):
+    """Return count/bytes for stored files without fetching their contents."""
+    if not _use_postgres():
+        rows = list_file_metadata(prefix)
+        return {"count": len(rows), "bytes": sum(int(r.get("size", 0)) for r in rows)}
+    init()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            if prefix:
+                cur.execute(
+                    "SELECT count(*), COALESCE(sum(octet_length(data)), 0) FROM certificate_portal_files WHERE key LIKE %s",
+                    (str(prefix) + "%",),
+                )
+            else:
+                cur.execute("SELECT count(*), COALESCE(sum(octet_length(data)), 0) FROM certificate_portal_files")
+            count, total = cur.fetchone()
+    return {"count": int(count or 0), "bytes": int(total or 0)}
+
 def healthcheck():
     """Check that the configured persistent database is reachable."""
     if not _use_postgres():

@@ -28,26 +28,31 @@ export const templatesService = {
     });
   },
 
-
-  getTemplateVersions(id: string) {
-    return apiClient<Array<{ version: number; savedAt?: string; current: boolean; fields: TemplateFieldConfig[] }>>(`/templates/${id}/versions`);
-  },
-  restoreTemplateVersion(id: string, version: number) {
-    return apiClient<CertificateTemplate>(`/templates/${id}/versions/${version}/restore`, { method: 'POST' });
-  },
-  async previewTemplatePdf(id: string, participant: Record<string, string>): Promise<Blob> {
+  async exactPreview(templateId: string, fields: TemplateFieldConfig[], sampleData: Record<string, string>) {
     const token = getAuthToken();
-    const response = await fetch(`/api/v1/templates/${encodeURIComponent(id)}/preview`, {
+    const response = await fetch(`${API_BASE_URL}/templates/${templateId}/preview`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ participant }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ fields, sampleData }),
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      throw new Error(payload?.error?.message || `Preview failed (${response.status})`);
+      const data = await response.json().catch(() => null);
+      throw new Error(data?.error?.message || `Preview failed (${response.status})`);
     }
     return response.blob();
   },
+
+  getVersions(id: string) {
+    return apiClient<Array<{ id: string; createdAt: string; fields: TemplateFieldConfig[] }>>(`/templates/${id}/versions`);
+  },
+
+  restoreVersion(id: string, versionId: string) {
+    return apiClient<CertificateTemplate>(`/templates/${id}/versions/${versionId}/restore`, { method: 'POST' });
+  },
+
   deleteTemplate(id: string) {
     return apiClient<boolean>(`/templates/${id}`, { method: 'DELETE' });
   },

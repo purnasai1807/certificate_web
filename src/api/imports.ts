@@ -244,10 +244,12 @@ export function saveStoredImportJob(job: ImportJob | null) {
 }
 
 export const importsService = {
-  async importGoogleSheet(url: string): Promise<ApiResponse<ImportUploadResponse & { sourceType?: string; totalRecords?: number }>> {
-    return apiClient('/imports/google-sheet', { method: 'POST', body: JSON.stringify({ url }) });
+  async importGoogleSheet(url: string): Promise<ApiResponse<ImportUploadResponse>> {
+    return apiClient<ImportUploadResponse>('/imports/google-sheet', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
   },
-
   async uploadAttendance(file: File): Promise<ApiResponse<ImportUploadResponse>> {
     const formData = new FormData();
     formData.append('file', file);

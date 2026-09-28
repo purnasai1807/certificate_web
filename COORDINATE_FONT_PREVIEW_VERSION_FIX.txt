@@ -1,0 +1,31 @@
+IMPLEMENTED IN THIS BUILD
+
+1. Exact PDF Preview
+   - Template editor now has an "Exact PDF Preview" action.
+   - It sends the current unsaved fields to the backend.
+   - Backend uses the SAME renderer as final certificate generation.
+   - This makes coordinate/font discrepancies visible before sending.
+
+2. Coordinate rendering
+   - X/Y are explicitly center-anchor percentages from the top-left canvas.
+   - PDF page rotation is normalized before overlay placement.
+   - PDF and editor use the same template dimensions.
+
+3. Typography
+   - Font family, size in points, weight, italic/bold-italic, alignment and color are persisted and used by the PDF renderer.
+   - Bundled fonts are used by the backend.
+   - Semibold maps to the bundled bold face when a true semibold TTF is unavailable.
+
+4. Version history
+   - Last 10 saved layouts are retained.
+   - Restore creates a new version rather than destroying history.
+
+5. Google Sheets
+   - Admin import page has Google Sheets URL import.
+   - The selected sheet tab is downloaded as CSV through the backend and follows the normal preview/mapping/validation/confirmation flow.
+   - Sheet must be shared as Anyone with the link -> Viewer.
+
+6. Free-plan limits remain enabled.
+
+NOTE
+The backend Python syntax check passes. The environment used to prepare this ZIP does not have a complete frontend node_modules installation, so a full Vite build could not be run here.

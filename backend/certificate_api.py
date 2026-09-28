@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import mimetypes
+import re
 import os
 import secrets
 import smtplib
@@ -14,10 +15,10 @@ import uuid
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 
 from flask import Blueprint, jsonify, request, send_file
 from werkzeug.utils import secure_filename
+from werkzeug.datastructures import FileStorage
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -27,6 +28,16 @@ except ImportError:  # pragma: no cover - requests should always be installed vi
     requests = None
 
 BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email"
+
+# Free-tier protection. These are intentionally conservative defaults and can be
+# overridden in Vercel without changing code. Generated PDFs are the largest
+# objects stored in Neon, so successful emailed certificates are retained only
+# up to these limits.
+MAX_BULK_EMAILS = int(os.getenv("MAX_BULK_EMAILS", "20"))
+MAX_STORED_CERTIFICATE_FILES = int(os.getenv("MAX_STORED_CERTIFICATE_FILES", "50"))
+MAX_STORED_CERTIFICATE_BYTES = int(os.getenv("MAX_STORED_CERTIFICATE_BYTES", str(100 * 1024 * 1024)))
+MAX_EMAIL_LOGS = int(os.getenv("MAX_EMAIL_LOGS", "500"))
+MAX_AUDIT_LOGS = int(os.getenv("MAX_AUDIT_LOGS", "1000"))
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -116,7 +127,51 @@ def _refresh_portal_state():
         pass
 
 
+def _trim_state_history():
+    # Keep the JSON state compact on the Neon Free plan. The newest records are
+    # retained; participant/certificate records themselves are never trimmed.
+    if isinstance(portal_state.get("emailJobs"), list):
+        portal_state["emailJobs"] = portal_state["emailJobs"][:MAX_EMAIL_LOGS]
+    if isinstance(portal_state.get("auditLogs"), list):
+        portal_state["auditLogs"] = portal_state["auditLogs"][:MAX_AUDIT_LOGS]
+
+
+def _prune_certificate_storage():
+    """Delete old emailed certificate PDFs while preserving certificate records."""
+    try:
+        files = db.list_file_metadata("certificate:")
+        usage = {"count": len(files), "bytes": sum(int(f.get("size", 0)) for f in files)}
+        if usage["count"] <= MAX_STORED_CERTIFICATE_FILES and usage["bytes"] <= MAX_STORED_CERTIFICATE_BYTES:
+            return {**usage, "deleted": 0}
+
+        sent_ids = {str(c.get("certificateId")) for c in portal_state.get("certificates", []) if c.get("status") == "SENT"}
+        candidates = [f for f in files if str(f.get("key", "")).split("certificate:", 1)[-1] in sent_ids]
+        candidates.sort(key=lambda f: f.get("created_at") or "")
+        deleted = 0
+        for file in candidates:
+            if usage["count"] <= MAX_STORED_CERTIFICATE_FILES and usage["bytes"] <= MAX_STORED_CERTIFICATE_BYTES:
+                break
+            key = str(file["key"])
+            db.delete_file(key)
+            size = int(file.get("size", 0))
+            usage["count"] = max(0, usage["count"] - 1)
+            usage["bytes"] = max(0, usage["bytes"] - size)
+            deleted += 1
+            certificate_id = key.split("certificate:", 1)[-1]
+            item = _find_certificate(certificate_id)
+            if item:
+                item["certificateFileRetained"] = False
+                item["certificateFileRetentionReason"] = "Removed by free-tier storage retention policy after email delivery."
+        if deleted:
+            _save_state()
+        return {**usage, "deleted": deleted}
+    except Exception:
+        # Storage cleanup must never make a successfully delivered email fail.
+        return None
+
+
 def _save_state():
+    _trim_state_history()
     container = db.load_state() or {}
     if not isinstance(container, dict):
         container = {}
@@ -354,22 +409,11 @@ def portal_logout():
     return _response(None, "Logged out successfully")
 
 
-def _create_import_job(filename, raw, file_type="CSV"):
-    """Create and persist an import job from already downloaded CSV/PDF bytes."""
-    if not raw:
-        raise ValueError("The source file is empty.")
-    if len(raw) > 25 * 1024 * 1024:
-        raise ValueError("Attendance files are limited to 25 MB.")
-    if file_type.upper() == "CSV":
-        text = _decode_csv(raw)
-        columns, rows = _parse_csv_text(text)
-    else:
-        columns, rows, _, _ = _parse_upload(type("Upload", (), {"filename": filename, "read": lambda self: raw})())
+def _create_csv_import_from_bytes(filename, raw):
+    columns, rows, file_type, _ = _parse_upload(FileStorage(stream=io.BytesIO(raw), filename=filename))
     import_id = f"imp_{uuid.uuid4().hex[:12]}"
-    safe_name = secure_filename(filename) or "google_sheet.csv"
-    db.save_file(f"import:{import_id}", safe_name, raw, mimetypes.guess_type(safe_name)[0] or "text/csv")
-    job = {"id": import_id, "filename": filename, "fileType": file_type.upper(),
-           "sourceType": "GOOGLE_SHEET" if str(filename).startswith("Google Sheet") else "FILE",
+    db.save_file(f"import:{import_id}", secure_filename(filename), raw, "text/csv")
+    job = {"id": import_id, "filename": filename, "fileType": "CSV",
            "fileSize": str(len(raw)), "uploadedAt": _now(), "status": "UPLOADED",
            "columns": columns, "rawRows": rows, "mapping": {}, "records": [],
            "totalRecords": len(rows), "validRecords": 0, "invalidRecords": 0,
@@ -377,8 +421,38 @@ def _create_import_job(filename, raw, file_type="CSV"):
            "missingIds": 0, "missingRollNumbers": 0, "missingCheckIn": 0, "missingCheckOut": 0}
     portal_state["imports"].append(job)
     _save_state()
-    _audit("FILE_UPLOADED", filename)
+    _audit("GOOGLE_SHEET_IMPORTED", filename)
     return job
+
+
+@certificate_api.post("/imports/google-sheet")
+def import_google_sheet():
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    body = request.get_json(silent=True) or {}
+    url = str(body.get("url") or "").strip()
+    if not url:
+        return _error("URL_REQUIRED", "Google Sheets URL is required.", 422)
+    match = re.search(r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if not match:
+        return _error("INVALID_GOOGLE_SHEET_URL", "Enter a valid Google Sheets URL.", 422)
+    sheet_id = match.group(1)
+    gid_match = re.search(r"(?:[#?&]gid=)([0-9]+)", url)
+    gid = gid_match.group(1) if gid_match else "0"
+    export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    if requests is None:
+        return _error("REQUESTS_UNAVAILABLE", "Google Sheets import is unavailable on this deployment.", 503)
+    try:
+        response = requests.get(export_url, timeout=20, allow_redirects=True)
+        if response.status_code != 200 or not response.content:
+            return _error("GOOGLE_SHEET_ACCESS", "Google Sheet could not be downloaded. Set sharing to Anyone with the link → Viewer.", 422)
+        raw = response.content
+        if len(raw) > 25 * 1024 * 1024:
+            return _error("FILE_TOO_LARGE", "Google Sheets imports are limited to 25 MB.", 413)
+        job = _create_csv_import_from_bytes(f"google-sheet-{sheet_id}-{gid}.csv", raw)
+    except requests.RequestException as exc:
+        return _error("GOOGLE_SHEET_ACCESS", f"Could not access Google Sheet: {exc}", 422)
+    return _response({"importId": job["id"], "filename": job["filename"], "fileType": "CSV", "status": "UPLOADED"}, status=201)
 
 
 @certificate_api.post("/imports")
@@ -392,62 +466,21 @@ def create_import():
     if raw_size > 25 * 1024 * 1024:
         return _error("FILE_TOO_LARGE", "Attendance files are limited to 25 MB.", 413)
     try:
-        raw = uploaded.read()
-        columns, rows, file_type, _ = _parse_upload(type("Upload", (), {"filename": uploaded.filename, "read": lambda self: raw})())
-        job = _create_import_job(uploaded.filename, raw, file_type)
-        # Keep the exact parsed result from the upload parser.
-        job["columns"], job["rawRows"] = columns, rows
-        _save_state()
+        columns, rows, file_type, raw = _parse_upload(uploaded)
     except ValueError as exc:
         return _error("INVALID_FILE", str(exc), 422)
-    return _response({"importId": job["id"], "filename": job["filename"], "fileType": job["fileType"], "status": "UPLOADED"}, status=201)
-
-
-@certificate_api.post("/imports/google-sheet")
-def create_google_sheet_import():
-    """Import a public Google Sheet as CSV without storing Google credentials."""
-    if not _require_admin():
-        return _error("UNAUTHORIZED", "Authentication required.", 401)
-    body = request.get_json(silent=True) or {}
-    source_url = str(body.get("url") or "").strip()
-    if not source_url:
-        return _error("URL_REQUIRED", "A Google Sheets URL is required.", 422)
-    parsed = urlparse(source_url)
-    if parsed.scheme not in ("https",) or parsed.netloc.lower() not in {"docs.google.com", "www.docs.google.com"}:
-        return _error("INVALID_GOOGLE_SHEET_URL", "Only docs.google.com Google Sheets URLs are supported.", 422)
-    parts = [part for part in parsed.path.split("/") if part]
-    try:
-        sheet_idx = parts.index("d")
-        spreadsheet_id = parts[sheet_idx + 1]
-    except (ValueError, IndexError):
-        return _error("INVALID_GOOGLE_SHEET_URL", "Use a Google Sheets URL containing /spreadsheets/d/<sheet-id>/...", 422)
-    qs = parse_qs(parsed.fragment.lstrip("#"))
-    gid = qs.get("gid", [None])[0]
-    if not gid:
-        gid = parse_qs(parsed.query).get("gid", ["0"])[0]
-    export_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid or '0'}"
-    try:
-        response = requests.get(export_url, timeout=20, allow_redirects=True, headers={"User-Agent": "CertificatePortal/1.0"})
-        if response.status_code != 200:
-            return _error("GOOGLE_SHEET_FETCH_FAILED", "Google Sheet could not be downloaded. Make the sheet accessible to anyone with the link and try again.", 422, {"status": response.status_code})
-        content_type = (response.headers.get("content-type") or "").lower()
-        raw = response.content
-        if not raw or ("text/html" in content_type and b"Google" in raw[:5000]):
-            return _error("GOOGLE_SHEET_NOT_PUBLIC", "The Google Sheet is not publicly readable. Set General access to anyone with the link as Viewer.", 422)
-        # Validate CSV before persisting it.
-        columns, rows = _parse_csv_text(_decode_csv(raw))
-        if not columns or not rows:
-            return _error("GOOGLE_SHEET_EMPTY", "The selected Google Sheet tab contains no readable rows.", 422)
-        job = _create_import_job(f"Google Sheet {spreadsheet_id}.csv", raw, "CSV")
-        job["sourceType"] = "GOOGLE_SHEET"
-        job["sourceUrl"] = source_url
-        job["columns"], job["rawRows"] = columns, rows
-        _save_state()
-        return _response({"importId": job["id"], "filename": job["filename"], "fileType": "CSV", "status": "UPLOADED", "sourceType": "GOOGLE_SHEET", "totalRecords": len(rows)}, status=201)
-    except requests.RequestException as exc:
-        return _error("GOOGLE_SHEET_FETCH_FAILED", f"Could not reach Google Sheets: {exc}", 422)
-    except (UnicodeDecodeError, ValueError) as exc:
-        return _error("GOOGLE_SHEET_INVALID", str(exc), 422)
+    import_id = f"imp_{uuid.uuid4().hex[:12]}"
+    db.save_file(f"import:{import_id}", secure_filename(uploaded.filename), raw, mimetypes.guess_type(uploaded.filename or "")[0] or "application/octet-stream")
+    job = {"id": import_id, "filename": uploaded.filename, "fileType": file_type,
+           "fileSize": str(len(raw)), "uploadedAt": _now(), "status": "UPLOADED",
+           "columns": columns, "rawRows": rows, "mapping": {}, "records": [],
+           "totalRecords": len(rows), "validRecords": 0, "invalidRecords": 0,
+           "duplicateRecords": 0, "missingNames": 0, "missingEmails": 0,
+           "missingIds": 0, "missingRollNumbers": 0, "missingCheckIn": 0, "missingCheckOut": 0}
+    portal_state["imports"].append(job)
+    _save_state()
+    _audit("FILE_UPLOADED", uploaded.filename)
+    return _response({"importId": import_id, "filename": uploaded.filename, "fileType": file_type, "status": "UPLOADED"}, status=201)
 
 
 @certificate_api.get("/imports")
@@ -975,7 +1008,7 @@ def create_template():
     item = {"id": template_id, "name": request.form.get("name") or uploaded.filename,
             "fileType": extension.upper(), "filePath": filename, "previewUrl": f"/api/v1/templates/{template_id}/file",
             "pageWidth": page_width, "pageHeight": page_height,
-            "active": not portal_state["templates"], "uploadedAt": _now(), "usageCount": 0, "fields": [], "version": 1, "versions": []}
+            "active": not portal_state["templates"], "uploadedAt": _now(), "usageCount": 0, "fields": [], "versions": []}
     portal_state["templates"].append(item)
     if item["active"]:
         portal_state["settings"]["activeTemplateId"] = template_id
@@ -1022,18 +1055,20 @@ def update_template_fields(template_id):
     fields = (request.get_json(silent=True) or {}).get("fields")
     if not isinstance(fields, list):
         return _error("INVALID_FIELDS", "Fields must be an array.", 422)
+
     previous = item.get("fields") or []
-    versions = item.setdefault("versions", [])
-    next_version = int(item.get("version") or 1)
     if previous != fields:
-        versions.append({"version": next_version, "savedAt": _now(), "fields": previous})
-        versions[:] = versions[-10:]
-        next_version += 1
+        versions = item.setdefault("versions", [])
+        versions.insert(0, {
+            "id": f"ver_{uuid.uuid4().hex[:10]}",
+            "createdAt": _now(),
+            "fields": previous,
+        })
+        item["versions"] = versions[:10]
     item["fields"] = fields
-    item["version"] = next_version
     _save_state()
-    _audit("TEMPLATE_UPDATED", item["name"], details=f"Template version {next_version} saved.")
-    return _response(item, message=f"Template saved as version {next_version}.")
+    _audit("TEMPLATE_UPDATED", item["name"])
+    return _response(item)
 
 
 @certificate_api.get("/templates/<template_id>/versions")
@@ -1043,56 +1078,27 @@ def template_versions(template_id):
     item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
     if not item:
         return _error("NOT_FOUND", "Template not found.", 404)
-    current = {"version": int(item.get("version") or 1), "savedAt": item.get("updatedAt") or item.get("uploadedAt"), "current": True, "fields": item.get("fields") or []}
-    history = list(reversed(item.get("versions") or []))
-    return _response([current] + [{**v, "current": False} for v in history])
+    return _response(item.get("versions", [])[:10])
 
 
-@certificate_api.post("/templates/<template_id>/versions/<int:version>/restore")
-def restore_template_version(template_id, version):
+@certificate_api.post("/templates/<template_id>/versions/<version_id>/restore")
+def restore_template_version(template_id, version_id):
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
     if not item:
         return _error("NOT_FOUND", "Template not found.", 404)
-    snapshot = next((v for v in item.get("versions") or [] if int(v.get("version", -1)) == version), None)
-    if not snapshot:
-        return _error("VERSION_NOT_FOUND", f"Template version {version} was not found.", 404)
+    versions = item.get("versions", [])
+    version = next((v for v in versions if v.get("id") == version_id), None)
+    if not version:
+        return _error("NOT_FOUND", "Template version not found.", 404)
     current = item.get("fields") or []
-    versions = item.setdefault("versions", [])
-    current_version = int(item.get("version") or 1)
-    versions.append({"version": current_version, "savedAt": _now(), "fields": current})
-    versions[:] = versions[-10:]
-    item["fields"] = snapshot.get("fields") or []
-    item["version"] = current_version + 1
+    versions.insert(0, {"id": f"ver_{uuid.uuid4().hex[:10]}", "createdAt": _now(), "fields": current})
+    item["versions"] = versions[:10]
+    item["fields"] = version.get("fields") or []
     _save_state()
-    _audit("TEMPLATE_VERSION_RESTORED", item["name"], details=f"Restored version {version} as new version {item['version']}.")
-    return _response(item, message=f"Version {version} restored as version {item['version']}.")
-
-
-@certificate_api.post("/templates/<template_id>/preview")
-def template_preview(template_id):
-    if not _require_admin():
-        return _error("UNAUTHORIZED", "Authentication required.", 401)
-    item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
-    if not item:
-        return _error("NOT_FOUND", "Template not found.", 404)
-    body = request.get_json(silent=True) or {}
-    participant = body.get("participant") or {}
-    sample = {
-        "certificateId": str(participant.get("certificateId") or "PREVIEW-001"),
-        "participantName": str(participant.get("name") or "Preview Participant"),
-        "participantEmail": str(participant.get("email") or "preview@example.com"),
-        "participantStudentId": str(participant.get("studentId") or "STUDENT-001"),
-        "participantRollNumber": str(participant.get("rollNumber") or "ROLL-001"),
-        "eventName": str(participant.get("eventName") or portal_state.get("settings", {}).get("eventName") or "Certificate Event"),
-        "issueDate": str(participant.get("date") or portal_state.get("settings", {}).get("issueDate") or datetime.now(timezone.utc).date().isoformat()),
-    }
-    try:
-        output = _render_certificate(sample, item, store=False)
-        return send_file(io.BytesIO(output), download_name=f"{item['name']}-preview.pdf", mimetype="application/pdf")
-    except (OSError, RuntimeError, ValueError) as exc:
-        return _error("PREVIEW_FAILED", str(exc), 422)
+    _audit("TEMPLATE_VERSION_RESTORED", item["name"], details=f"Restored version {version_id}")
+    return _response(item, message="Template version restored.")
 
 
 @certificate_api.delete("/templates/<template_id>")
@@ -1220,6 +1226,9 @@ def _approve_generate_send(item, comment=""):
         raise RuntimeError(item["failureReason"])
 
     try:
+        # Free-plan housekeeping runs before creating another BYTEA PDF so an
+        # already-full Neon project can recover before the new certificate is stored.
+        _prune_certificate_storage()
         file_key = _render_certificate(item, template)
         item.update({
             "status": "GENERATED",
@@ -1260,7 +1269,9 @@ def _approve_generate_send(item, comment=""):
         job.update({"status": "SENT", "sentAt": sent_at, "error": ""})
         item.update({"status": "SENT", "sentAt": sent_at, "emailDeliveryStatus": "SENT", "failureReason": ""})
         _audit("EMAIL_SENT", item["certificateId"])
+        item["certificateFileRetained"] = True
         _save_state()
+        _prune_certificate_storage()
         return item, job
     except Exception as exc:
         item.update({"status": "FAILED", "emailDeliveryStatus": "FAILED", "failureReason": str(exc)})
@@ -1337,6 +1348,13 @@ def bulk_approve():
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     ids = (request.get_json(silent=True) or {}).get("certificateIds", [])
+    if len(ids) > MAX_BULK_EMAILS:
+        return _error(
+            "BULK_EMAIL_LIMIT",
+            f"Free-plan protection allows at most {MAX_BULK_EMAILS} certificate emails per batch. Select {MAX_BULK_EMAILS} or fewer and run another batch.",
+            422,
+            {"maxPerBatch": MAX_BULK_EMAILS, "requested": len(ids)},
+        )
     results, approved = [], 0
     for identifier in ids:
         item = _find_certificate(identifier) or _find_certificate_for_participant(identifier)
@@ -1366,6 +1384,8 @@ def bulk_generate():
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     ids = (request.get_json(silent=True) or {}).get("certificateIds", [])
+    if len(ids) > MAX_BULK_EMAILS:
+        return _error("BULK_GENERATE_LIMIT", f"Free-plan protection allows at most {MAX_BULK_EMAILS} certificate generations per batch.", 422, {"maxPerBatch": MAX_BULK_EMAILS, "requested": len(ids)})
     completed = 0
     results = []
     for identifier in ids:
@@ -1442,7 +1462,14 @@ def _draw_field(overlay, field, value, width, height):
         overlay.drawCentredString(x, y, value)
 
 
-def _render_certificate(item, template, store=True):
+def _render_certificate_bytes(item, template):
+    """Render a certificate using exactly the same code path used by generation.
+
+    This function intentionally does not save the PDF. The editor's exact preview
+    endpoint and the real certificate generator both call it, so coordinates,
+    font family, font style, weight, size, alignment and color cannot drift between
+    preview and the final emailed PDF.
+    """
     if PdfReader is None or canvas is None:
         raise RuntimeError("Certificate rendering dependencies are not installed.")
     participant_name = str(item.get("participantName") or item.get("participant", {}).get("name") or "").strip()
@@ -1475,6 +1502,14 @@ def _render_certificate(item, template, store=True):
         if not reader.pages:
             raise RuntimeError("Certificate template PDF has no pages.")
         base_page = reader.pages[0]
+        # A PDF page can carry a /Rotate flag. Move that rotation into the page
+        # content first so the overlay coordinate system matches what viewers
+        # actually display.
+        if hasattr(base_page, "transfer_rotation_to_content"):
+            try:
+                base_page.transfer_rotation_to_content()
+            except Exception:
+                pass
         width = float(base_page.mediabox.width)
         height = float(base_page.mediabox.height)
         packet = io.BytesIO()
@@ -1512,11 +1547,48 @@ def _render_certificate(item, template, store=True):
         overlay.save()
         packet.seek(0)
         output_bytes = packet.read()
-    if not store:
-        return output_bytes
+    return output_bytes
+
+
+def _render_certificate(item, template):
+    output_bytes = _render_certificate_bytes(item, template)
     file_key = f"certificate:{item['certificateId']}"
     db.save_file(file_key, f"{item['certificateId']}.pdf", output_bytes, "application/pdf")
     return file_key
+
+
+@certificate_api.post("/templates/<template_id>/preview")
+def template_exact_preview(template_id):
+    """Return an exact PDF preview using the production certificate renderer."""
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
+    if not template:
+        return _error("NOT_FOUND", "Template not found.", 404)
+    body = request.get_json(silent=True) or {}
+    fields = body.get("fields")
+    if not isinstance(fields, list):
+        return _error("INVALID_FIELDS", "Fields must be an array.", 422)
+
+    # Preview exactly what is currently in the editor, even before Save.
+    preview_template = {**template, "fields": fields}
+    sample = body.get("sampleData") if isinstance(body.get("sampleData"), dict) else {}
+    item = {
+        "certificateId": str(sample.get("certificateId") or "PREVIEW"),
+        "participantName": str(sample.get("name") or "Sample Participant"),
+        "participantEmail": str(sample.get("email") or "sample@example.com"),
+        "participantStudentId": str(sample.get("studentId") or ""),
+        "participantRollNumber": str(sample.get("rollNumber") or ""),
+        "eventName": str(sample.get("eventName") or portal_state.get("settings", {}).get("eventName") or ""),
+        "issueDate": str(sample.get("date") or portal_state.get("settings", {}).get("issueDate") or _now()[:10]),
+    }
+    try:
+        output_bytes = _render_certificate_bytes(item, preview_template)
+    except (RuntimeError, OSError, ValueError) as exc:
+        return _error("PREVIEW_FAILED", str(exc), 422)
+    response = send_file(io.BytesIO(output_bytes), mimetype="application/pdf", download_name="certificate-preview.pdf")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @certificate_api.post("/certificates/<certificate_id>/generate")
@@ -1743,6 +1815,25 @@ def email_logs():
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     return _response(_paginate(portal_state["emailJobs"]))
+
+
+@certificate_api.get("/storage/usage")
+def storage_usage():
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    usage = db.file_storage_usage()
+    certificate_usage = db.file_storage_usage("certificate:")
+    template_usage = db.file_storage_usage("template:")
+    import_usage = db.file_storage_usage("import:")
+    return _response({
+        "databaseFileStorage": usage,
+        "certificateFiles": {**certificate_usage, "maxFiles": MAX_STORED_CERTIFICATE_FILES, "maxBytes": MAX_STORED_CERTIFICATE_BYTES},
+        "templateFiles": template_usage,
+        "importFiles": import_usage,
+        "maxBulkEmails": MAX_BULK_EMAILS,
+        "emailLogLimit": MAX_EMAIL_LOGS,
+        "auditLogLimit": MAX_AUDIT_LOGS,
+    })
 
 
 @certificate_api.get("/dashboard/stats")

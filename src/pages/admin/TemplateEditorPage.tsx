@@ -45,8 +45,10 @@ export const TemplateEditorPage: React.FC = () => {
   const [sampleParticipants, setSampleParticipants] = useState<Participant[]>([]);
   const [selectedParticipantId, setSelectedParticipantId] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
-  const [versionList, setVersionList] = useState<Array<{ version: number; savedAt?: string; current: boolean; fields: TemplateFieldConfig[] }>>([]);
   const [isPreviewingPdf, setIsPreviewingPdf] = useState(false);
+  const [exactPreviewUrl, setExactPreviewUrl] = useState<string | null>(null);
+  const [versions, setVersions] = useState<Array<{ id: string; createdAt: string; fields: TemplateFieldConfig[] }>>([]);
+  const [isRestoringVersion, setIsRestoringVersion] = useState(false);
   const [settings, setSettings] = useState<SystemSettings>({ eventName: '', organizationName: '', certificateIdPrefix: 'CERT', issueDate: '', activeTemplateId: '', requireCheckIn: true, requireCheckOut: true, senderName: '', replyToAddress: '', emailSubject: '', emailBodyTemplate: '' });
 
   useEffect(() => {
@@ -61,8 +63,8 @@ export const TemplateEditorPage: React.FC = () => {
         setTemplate(active);
         setSelectedFieldId(active?.fields[0]?.id || null);
         if (active) {
-          const versionsRes = await templatesService.getTemplateVersions(active.id);
-          if (versionsRes.success) setVersionList(versionsRes.data || []);
+          const versionRes = await templatesService.getVersions(active.id);
+          if (versionRes.success) setVersions(versionRes.data || []);
         }
       } catch {
         setTemplate(null);
@@ -83,6 +85,10 @@ export const TemplateEditorPage: React.FC = () => {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => () => {
+    if (exactPreviewUrl) URL.revokeObjectURL(exactPreviewUrl);
+  }, [exactPreviewUrl]);
 
   const currentField = template?.fields.find((f) => f.id === selectedFieldId) || null;
   const sampleParticipant = sampleParticipants.find((p) => p.id === selectedParticipantId) || sampleParticipants[0];
@@ -133,6 +139,50 @@ export const TemplateEditorPage: React.FC = () => {
     setTemplate({ ...template, fields: updatedFields });
   };
 
+  const handleExactPdfPreview = async () => {
+    if (!template) return;
+    if (!template.fields.some((f) => f.fieldKey === 'NAME')) {
+      showToast('error', 'Participant Name is required', 'Add Participant Name before generating an exact PDF preview.');
+      return;
+    }
+    setIsPreviewingPdf(true);
+    try {
+      const blob = await templatesService.exactPreview(template.id, template.fields, {
+        name: sampleParticipant?.name || 'Sample Participant',
+        email: sampleParticipant?.email || '',
+        studentId: sampleParticipant?.studentId || '',
+        rollNumber: sampleParticipant?.rollNumber || '',
+        eventName: settings?.eventName || '',
+        date: settings?.issueDate || '',
+        certificateId: sampleParticipant?.certificateId || 'PREVIEW',
+      });
+      if (exactPreviewUrl) URL.revokeObjectURL(exactPreviewUrl);
+      setExactPreviewUrl(URL.createObjectURL(blob));
+    } catch (error) {
+      showToast('error', 'Exact PDF Preview Failed', error instanceof Error ? error.message : 'Could not render the certificate preview.');
+    } finally {
+      setIsPreviewingPdf(false);
+    }
+  };
+
+  const handleRestoreVersion = async (versionId: string) => {
+    if (!template) return;
+    setIsRestoringVersion(true);
+    try {
+      const res = await templatesService.restoreVersion(template.id, versionId);
+      if (!res.success || !res.data) throw new Error(res.message || 'Restore failed.');
+      setTemplate(res.data);
+      setSelectedFieldId(res.data.fields[0]?.id || null);
+      const versionRes = await templatesService.getVersions(template.id);
+      if (versionRes.success) setVersions(versionRes.data || []);
+      showToast('success', 'Version Restored', 'The selected certificate layout was restored as a new version.');
+    } catch (error) {
+      showToast('error', 'Restore Failed', error instanceof Error ? error.message : 'Could not restore this version.');
+    } finally {
+      setIsRestoringVersion(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!template) return;
     if (!template.fields.some((f) => f.fieldKey === 'NAME')) {
@@ -142,56 +192,15 @@ export const TemplateEditorPage: React.FC = () => {
     setIsSaving(true);
     try {
       const res = await templatesService.updateTemplateFields(template.id, template.fields);
-      if (res.success && res.data) {
-        setTemplate(res.data);
-        const versionsRes = await templatesService.getTemplateVersions(template.id);
-        if (versionsRes.success) setVersionList(versionsRes.data || []);
-        showToast('success', 'Mapping Saved', res.message || `Certificate layout saved as version ${res.data.version || 1}.`);
+      if (res.success) {
+        const versionRes = await templatesService.getVersions(template.id);
+        if (versionRes.success) setVersions(versionRes.data || []);
+        showToast('success', 'Mapping Saved', 'Certificate layout, coordinates and typography saved.');
       }
     } catch {
       showToast('error', 'Save Failed', 'Failed to save field mapping.');
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleServerPreview = async () => {
-    if (!template) return;
-    const p = sampleParticipant;
-    setIsPreviewingPdf(true);
-    try {
-      const blob = await templatesService.previewTemplatePdf(template.id, {
-        name: p?.name || 'Preview Participant',
-        email: p?.email || 'preview@example.com',
-        studentId: p?.studentId || 'STUDENT-001',
-        rollNumber: p?.rollNumber || 'ROLL-001',
-        eventName: settings.eventName || 'Certificate Event',
-        date: settings.issueDate || new Date().toISOString().slice(0, 10),
-        certificateId: `${settings.certificateIdPrefix || 'CERT'}-PREVIEW`,
-      });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (error: any) {
-      showToast('error', 'Preview Failed', error?.message || 'Could not generate the server-rendered preview.');
-    } finally {
-      setIsPreviewingPdf(false);
-    }
-  };
-
-  const handleRestoreVersion = async (version: number) => {
-    if (!template || !window.confirm(`Restore template version ${version}? This creates a new version and does not delete history.`)) return;
-    try {
-      const res = await templatesService.restoreTemplateVersion(template.id, version);
-      if (res.success && res.data) {
-        setTemplate(res.data);
-        setSelectedFieldId(res.data.fields[0]?.id || null);
-        const versionsRes = await templatesService.getTemplateVersions(template.id);
-        if (versionsRes.success) setVersionList(versionsRes.data || []);
-        showToast('success', 'Version Restored', res.message || `Version ${version} restored.`);
-      }
-    } catch (error: any) {
-      showToast('error', 'Restore Failed', error?.message || 'Could not restore the selected version.');
     }
   };
 
@@ -244,12 +253,11 @@ export const TemplateEditorPage: React.FC = () => {
           </div>
 
           <button
-            onClick={handleServerPreview}
+            onClick={handleExactPdfPreview}
             disabled={isPreviewingPdf}
-            className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 disabled:opacity-50"
+            className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 disabled:opacity-50"
           >
-            <Eye className="w-4 h-4" />
-            {isPreviewingPdf ? 'Rendering...' : 'Real PDF Preview'}
+            {isPreviewingPdf ? 'Rendering...' : 'Exact PDF Preview'}
           </button>
 
           <button
@@ -264,26 +272,6 @@ export const TemplateEditorPage: React.FC = () => {
             )}
             <span>Save Coordinates</span>
           </button>
-        </div>
-      </div>
-
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-        <div>
-          <p className="text-xs font-bold">Template Version History</p>
-          <p className="text-[10px] text-slate-500 mt-1">Every saved coordinate/font change creates a new version. Up to 10 previous versions are retained.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
-            defaultValue=""
-            onChange={(e) => { const v = Number(e.target.value); if (v) handleRestoreVersion(v); e.currentTarget.value = ''; }}
-          >
-            <option value="">Restore previous version...</option>
-            {versionList.filter((v) => !v.current).map((v) => (
-              <option key={v.version} value={v.version}>Version {v.version}{v.savedAt ? ` · ${new Date(v.savedAt).toLocaleString()}` : ''}</option>
-            ))}
-          </select>
-          <span className="px-3 py-2 rounded-xl bg-purple-50 text-purple-700 text-xs font-bold">Current v{template.version || 1}</span>
         </div>
       </div>
 
@@ -425,6 +413,44 @@ export const TemplateEditorPage: React.FC = () => {
             <span>Click any text to activate coordinate handles</span>
             <span className="font-mono">Aspect Ratio: {Number(template.pageWidth || 842).toFixed(0)} × {Number(template.pageHeight || 595).toFixed(0)}</span>
           </div>
+
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-bold text-slate-700 dark:text-slate-200">Template Version History</div>
+                <div className="text-[10px] text-slate-400">Last 10 saved layouts are retained.</div>
+              </div>
+              <span className="text-[10px] font-mono text-purple-600">{versions.length}/10</span>
+            </div>
+            {versions.length === 0 ? (
+              <div className="text-[10px] text-slate-400">No previous saved versions yet.</div>
+            ) : (
+              <div className="space-y-1.5 max-h-40 overflow-auto">
+                {versions.map((version, index) => (
+                  <div key={version.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-800 px-2.5 py-2">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-semibold">Version {versions.length - index}</div>
+                      <div className="text-[9px] text-slate-400">{new Date(version.createdAt).toLocaleString()}</div>
+                    </div>
+                    <button type="button" disabled={isRestoringVersion} onClick={() => handleRestoreVersion(version.id)} className="text-[10px] font-bold text-purple-600 hover:text-purple-800 disabled:opacity-50">Restore</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {exactPreviewUrl && (
+            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-emerald-200 dark:border-emerald-900 p-4 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">Exact PDF Preview</div>
+                  <div className="text-[10px] text-slate-400">This preview uses the same PDF renderer as the final emailed certificate.</div>
+                </div>
+                <button type="button" onClick={() => { URL.revokeObjectURL(exactPreviewUrl); setExactPreviewUrl(null); }} className="text-xs text-slate-400 hover:text-slate-700">Close</button>
+              </div>
+              <iframe title="Exact certificate PDF preview" src={exactPreviewUrl} className="w-full h-[520px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white" />
+            </div>
+          )}
         </div>
 
         {/* RIGHT: Field Properties Inspector (3 cols) */}
@@ -458,7 +484,7 @@ export const TemplateEditorPage: React.FC = () => {
               {/* Coordinates X & Y */}
               <div className="space-y-2 pt-1 border-t border-slate-100 dark:border-slate-800">
                 <div className="flex justify-between items-center text-[11px]">
-                  <span className="font-semibold text-slate-400">Position X (Horizontal)</span>
+                  <span className="font-semibold text-slate-400">Position X (Horizontal, center anchor)</span>
                   <span className="font-mono font-bold text-purple-600">{currentField.xPercent}%</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -485,7 +511,7 @@ export const TemplateEditorPage: React.FC = () => {
                 </div>
 
                 <div className="flex justify-between items-center text-[11px] pt-2">
-                  <span className="font-semibold text-slate-400">Position Y (Vertical)</span>
+                  <span className="font-semibold text-slate-400">Position Y (Vertical, center anchor)</span>
                   <span className="font-mono font-bold text-purple-600">{currentField.yPercent}%</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -525,7 +551,7 @@ export const TemplateEditorPage: React.FC = () => {
                       type="number"
                       min="1"
                       max="200"
-                      step="1"
+                      step="0.5"
                       value={currentField.fontSize}
                       onChange={(e) => handleUpdateFieldProperty('fontSize', Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
                       className="w-20 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
