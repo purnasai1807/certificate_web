@@ -1039,7 +1039,18 @@ def create_template():
                 page_height = page_width * float(ih) / float(iw)
     except Exception:
         pass
-    db.save_file(f"template:{template_id}", filename, raw_template, content_type)
+    file_key = f"template:{template_id}"
+    db.save_file(file_key, filename, raw_template, content_type)
+    # Verify the bytes can immediately be read back from the configured persistent
+    # store. Never publish a template metadata record that points at a missing file.
+    stored_check = db.load_file(file_key)
+    if not stored_check or stored_check.get("data") != raw_template:
+        db.delete_file(file_key)
+        return _error(
+            "PERSISTENT_STORAGE_WRITE_FAILED",
+            "The certificate template could not be verified in persistent storage. Configure the Vercel PostgreSQL/Neon connection and upload the template again.",
+            503,
+        )
     item = {"id": template_id, "name": request.form.get("name") or uploaded.filename,
             "fileType": extension.upper(), "filePath": filename, "previewUrl": f"/api/v1/templates/{template_id}/file",
             "pageWidth": page_width, "pageHeight": page_height,
@@ -1920,6 +1931,32 @@ def email_logs():
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     return _response(_paginate(portal_state["emailJobs"]))
+
+
+@certificate_api.get("/storage/health")
+def storage_health():
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    try:
+        health = db.healthcheck()
+        templates = portal_state.get("templates", [])
+        checks = []
+        missing = 0
+        for template in templates:
+            key = f"template:{template.get('id', '')}"
+            stored = db.load_file(key) if template.get("id") else None
+            ok = bool(stored and stored.get("data"))
+            if not ok:
+                missing += 1
+            checks.append({"templateId": template.get("id"), "name": template.get("name"), "fileStored": ok})
+        return _response({
+            **health,
+            "templateCount": len(templates),
+            "missingTemplateFiles": missing,
+            "templates": checks,
+        })
+    except Exception as exc:
+        return _error("PERSISTENT_STORAGE_UNAVAILABLE", str(exc), 503)
 
 
 @certificate_api.get("/storage/usage")

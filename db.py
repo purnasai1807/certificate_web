@@ -52,6 +52,7 @@ _initialized = False
 def _dsn():
     for name in (
         "DATABASE_URL",
+        "DATABASE_URL_UNPOOLED",
         "POSTGRES_URL",
         "POSTGRES_URL_NON_POOLING",
         "POSTGRES_PRISMA_URL",
@@ -107,6 +108,11 @@ def _connect():
 def _use_postgres():
     dsn = _dsn()
     require_persistent = os.getenv("REQUIRE_PERSISTENT_STORAGE", "").strip().lower() in {"1", "true", "yes"}
+    # Vercel functions must never silently fall back to the deployment filesystem:
+    # that filesystem is ephemeral and causes uploaded templates/files to disappear
+    # between invocations. A persistent Postgres URL is mandatory in production.
+    if os.getenv("VERCEL", "").strip().lower() in {"1", "true", "yes"}:
+        require_persistent = True
     if require_persistent and not dsn:
         raise RuntimeError(
             "Persistent storage is required but DATABASE_URL is not configured. "
