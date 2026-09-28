@@ -24,5 +24,12 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ]
+  ],
+  "functions": {
+    "api/index.py": {
+      "includeFiles": [
+        "public/fonts/**"
+      ]
+    }
+  }
 }
