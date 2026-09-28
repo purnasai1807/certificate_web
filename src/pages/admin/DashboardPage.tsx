@@ -309,7 +309,7 @@ export const DashboardPage: React.FC = () => {
             <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
               <span className="w-6 h-6 rounded-md bg-purple-600 text-white flex items-center justify-center font-bold text-[11px]">2</span>
               <span className="font-semibold">VALIDATE ELIGIBILITY</span>
-              <span className="text-slate-400 font-sans text-[11px]">→ Rule: Check-in + Check-out mandatory (220 Eligible, 30 Not Eligible)</span>
+              <span className="text-slate-400 font-sans text-[11px]">→ Eligibility is decided by the administrator; attendance fields are informational.</span>
             </div>
             <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
               <span className="w-6 h-6 rounded-md bg-purple-600 text-white flex items-center justify-center font-bold text-[11px]">3</span>
@@ -385,7 +385,7 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-            <span>Admin: Alex Vance</span>
+            <span>Administrator-controlled workflow</span>
             <span className="flex items-center gap-1 text-emerald-600 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
               Audit Stream Active

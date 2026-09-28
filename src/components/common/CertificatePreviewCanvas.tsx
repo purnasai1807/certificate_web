@@ -33,6 +33,9 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
   const dragRef = useRef<{ fieldId: string; pointerId: number } | null>(null);
   const rawPreviewUrl = (template as CertificateTemplate & { previewUrl?: string }).previewUrl || template.fileUrl || '';
   const fileType = String(template.fileType || '').toLowerCase();
+  const pageWidth = Number((template as any).pageWidth) || 842;
+  const pageHeight = Number((template as any).pageHeight) || 595;
+  const aspectRatio = `${pageWidth} / ${pageHeight}`;
 
   const resolvePreviewUrl = (value: string) => {
     if (!value) return '';
@@ -87,7 +90,7 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
   if (previewBlobUrl && !interactive) {
     if (['png', 'jpg', 'jpeg'].includes(fileType)) {
       return (
-        <div className="relative w-full aspect-[1.414/1] overflow-hidden rounded-lg border border-slate-200 bg-white">
+        <div className="relative w-full overflow-hidden rounded-lg border border-slate-200 bg-white" style={{ aspectRatio }}>
           <img src={previewBlobUrl} alt={template.name} className="h-full w-full object-contain" />
         </div>
       );
@@ -95,7 +98,7 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
 
     if (fileType === 'pdf') {
       return (
-        <div className="relative w-full aspect-[1.414/1] overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+        <div className="relative w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50" style={{ aspectRatio }}>
           <embed src={previewBlobUrl} type="application/pdf" className="h-full w-full" />
         </div>
       );
@@ -133,13 +136,12 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
   };
 
   return (
-    <div ref={canvasRef} className="relative w-full aspect-[1.414/1] bg-white text-slate-900 rounded-lg shadow-2xl overflow-hidden border border-slate-300 select-none">
+    <div ref={canvasRef} className="relative w-full bg-white text-slate-900 rounded-lg shadow-2xl overflow-hidden border border-slate-300 select-none" style={{ aspectRatio }}>
       {previewBlobUrl && ['png', 'jpg', 'jpeg'].includes(fileType) && (
-        <img
-          src={previewBlobUrl}
-          alt={template.name}
-          className="absolute inset-0 h-full w-full object-contain pointer-events-none"
-        />
+        <img src={previewBlobUrl} alt={template.name} className="absolute inset-0 h-full w-full object-fill pointer-events-none" />
+      )}
+      {previewBlobUrl && fileType === 'pdf' && (
+        <embed src={previewBlobUrl} type="application/pdf" className="absolute inset-0 h-full w-full pointer-events-none" />
       )}
 
       {!previewBlobUrl && (
@@ -198,7 +200,7 @@ export const CertificatePreviewCanvas: React.FC<CertificatePreviewCanvasProps> =
                     : field.textAlign === 'right'
                     ? 'translate(-100%, -50%)'
                     : 'translate(0, -50%)',
-                fontSize: `${field.fontSize * 0.75}px`,
+                fontSize: `${Math.max(1, Number(field.fontSize) || 1) * 96 / 72}px`,
                 fontWeight: field.fontWeight === 'semibold' ? 600 : field.fontWeight === 'medium' ? 500 : field.fontWeight === 'bold' ? 700 : 400,
                 fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bold italic' ? 'italic' : 'normal',
                 fontFamily: field.fontFamily,

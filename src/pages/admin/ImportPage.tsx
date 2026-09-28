@@ -25,6 +25,8 @@ export const ImportPage: React.FC = () => {
   const [history, setHistory] = useState<ImportJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [googleSheetUrl, setGoogleSheetUrl] = useState('');
+  const [isImportingSheet, setIsImportingSheet] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { showToast } = useNotifications();
@@ -128,6 +130,45 @@ export const ImportPage: React.FC = () => {
         <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
           Upload a CSV or PDF containing participant and attendance check-in / check-out timestamps.
         </p>
+      </div>
+
+      {/* Google Sheets import */}
+      <div className="rounded-3xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/50 dark:bg-emerald-950/20 p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+          <div>
+            <h2 className="text-sm font-bold">Import from Google Sheets</h2>
+            <p className="text-[11px] text-slate-500 mt-0.5">Use a public/viewer Google Sheet. Cell values are imported; certificate font styling is configured separately in the Template Editor.</p>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={googleSheetUrl}
+            onChange={(e) => setGoogleSheetUrl(e.target.value)}
+            placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0"
+            className="flex-1 px-3 py-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-slate-900 text-xs outline-none focus:ring-2 focus:ring-emerald-500/30"
+          />
+          <button
+            type="button"
+            disabled={!googleSheetUrl.trim() || isImportingSheet}
+            onClick={async () => {
+              setIsImportingSheet(true);
+              try {
+                const res = await importsService.importGoogleSheet(googleSheetUrl.trim());
+                if (!res.success || !res.data) throw new Error(res.error?.message || 'Google Sheet import failed.');
+                showToast('success', 'Google Sheet Imported', `${res.data.totalRecords || 0} rows loaded. Opening preview.`);
+                navigate(`/admin/import/preview?importId=${encodeURIComponent(res.data.importId)}`);
+              } catch (error: any) {
+                showToast('error', 'Google Sheet Import Failed', error?.message || 'Could not read the Google Sheet.');
+              } finally {
+                setIsImportingSheet(false);
+              }
+            }}
+            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold disabled:opacity-50"
+          >
+            {isImportingSheet ? 'Importing...' : 'Import Sheet'}
+          </button>
+        </div>
       </div>
 
       {/* Drag & Drop Area */}

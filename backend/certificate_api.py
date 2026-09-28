@@ -14,9 +14,12 @@ import uuid
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 from flask import Blueprint, jsonify, request, send_file
 from werkzeug.utils import secure_filename
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 try:
     import requests
@@ -41,7 +44,27 @@ import db
 
 certificate_api = Blueprint("certificate_api", __name__, url_prefix="/api/v1")
 ROOT = Path(__file__).resolve().parent.parent
+FONT_DIR = ROOT / "public" / "fonts"
 
+def _register_certificate_fonts():
+    fonts = {
+        "CertCinzel": ("Cinzel-Regular.ttf", "Cinzel-Bold.ttf", "Cinzel-Italic.ttf", "Cinzel-BoldItalic.ttf"),
+        "CertPlayfair": ("PlayfairDisplay-Regular.ttf", "PlayfairDisplay-Bold.ttf", "PlayfairDisplay-Italic.ttf", "PlayfairDisplay-BoldItalic.ttf"),
+        "CertInter": ("Inter-Regular.ttf", "Inter-Bold.ttf", "Inter-Italic.ttf", "Inter-BoldItalic.ttf"),
+        "CertJakarta": ("PlusJakartaSans-Regular.ttf", "PlusJakartaSans-Bold.ttf", "PlusJakartaSans-Italic.ttf", "PlusJakartaSans-BoldItalic.ttf"),
+        "CertVibes": ("GreatVibes-Regular.ttf", "GreatVibes-Bold.ttf", "GreatVibes-Italic.ttf", "GreatVibes-BoldItalic.ttf"),
+    }
+    for family, files in fonts.items():
+        for suffix, filename in zip(("", "-Bold", "-Italic", "-BoldItalic"), files):
+            name = family + suffix
+            path = FONT_DIR / filename
+            if path.exists() and name not in pdfmetrics.getRegisteredFontNames():
+                try:
+                    pdfmetrics.registerFont(TTFont(name, str(path)))
+                except Exception:
+                    pass
+
+_register_certificate_fonts()
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
@@ -76,6 +99,21 @@ def _load_state():
 
 
 portal_state = _load_state()
+
+@certificate_api.before_request
+def _refresh_portal_state():
+    # Vercel may reuse a warm Python process after another instance has changed
+    # the database. Reload the authoritative state before every API request so
+    # imports, template edits, certificates and email logs survive refreshes and
+    # do not remain stuck in a stale worker snapshot.
+    global portal_state
+    try:
+        fresh = _load_state()
+        if isinstance(fresh, dict):
+            portal_state = fresh
+    except Exception:
+        # Let the actual endpoint return the normal storage/configuration error.
+        pass
 
 
 def _save_state():
@@ -316,6 +354,33 @@ def portal_logout():
     return _response(None, "Logged out successfully")
 
 
+def _create_import_job(filename, raw, file_type="CSV"):
+    """Create and persist an import job from already downloaded CSV/PDF bytes."""
+    if not raw:
+        raise ValueError("The source file is empty.")
+    if len(raw) > 25 * 1024 * 1024:
+        raise ValueError("Attendance files are limited to 25 MB.")
+    if file_type.upper() == "CSV":
+        text = _decode_csv(raw)
+        columns, rows = _parse_csv_text(text)
+    else:
+        columns, rows, _, _ = _parse_upload(type("Upload", (), {"filename": filename, "read": lambda self: raw})())
+    import_id = f"imp_{uuid.uuid4().hex[:12]}"
+    safe_name = secure_filename(filename) or "google_sheet.csv"
+    db.save_file(f"import:{import_id}", safe_name, raw, mimetypes.guess_type(safe_name)[0] or "text/csv")
+    job = {"id": import_id, "filename": filename, "fileType": file_type.upper(),
+           "sourceType": "GOOGLE_SHEET" if str(filename).startswith("Google Sheet") else "FILE",
+           "fileSize": str(len(raw)), "uploadedAt": _now(), "status": "UPLOADED",
+           "columns": columns, "rawRows": rows, "mapping": {}, "records": [],
+           "totalRecords": len(rows), "validRecords": 0, "invalidRecords": 0,
+           "duplicateRecords": 0, "missingNames": 0, "missingEmails": 0,
+           "missingIds": 0, "missingRollNumbers": 0, "missingCheckIn": 0, "missingCheckOut": 0}
+    portal_state["imports"].append(job)
+    _save_state()
+    _audit("FILE_UPLOADED", filename)
+    return job
+
+
 @certificate_api.post("/imports")
 def create_import():
     if not _require_admin():
@@ -327,21 +392,62 @@ def create_import():
     if raw_size > 25 * 1024 * 1024:
         return _error("FILE_TOO_LARGE", "Attendance files are limited to 25 MB.", 413)
     try:
-        columns, rows, file_type, raw = _parse_upload(uploaded)
+        raw = uploaded.read()
+        columns, rows, file_type, _ = _parse_upload(type("Upload", (), {"filename": uploaded.filename, "read": lambda self: raw})())
+        job = _create_import_job(uploaded.filename, raw, file_type)
+        # Keep the exact parsed result from the upload parser.
+        job["columns"], job["rawRows"] = columns, rows
+        _save_state()
     except ValueError as exc:
         return _error("INVALID_FILE", str(exc), 422)
-    import_id = f"imp_{uuid.uuid4().hex[:12]}"
-    db.save_file(f"import:{import_id}", secure_filename(uploaded.filename), raw, mimetypes.guess_type(uploaded.filename or "")[0] or "application/octet-stream")
-    job = {"id": import_id, "filename": uploaded.filename, "fileType": file_type,
-           "fileSize": str(len(raw)), "uploadedAt": _now(), "status": "UPLOADED",
-           "columns": columns, "rawRows": rows, "mapping": {}, "records": [],
-           "totalRecords": len(rows), "validRecords": 0, "invalidRecords": 0,
-           "duplicateRecords": 0, "missingNames": 0, "missingEmails": 0,
-           "missingIds": 0, "missingRollNumbers": 0, "missingCheckIn": 0, "missingCheckOut": 0}
-    portal_state["imports"].append(job)
-    _save_state()
-    _audit("FILE_UPLOADED", uploaded.filename)
-    return _response({"importId": import_id, "filename": uploaded.filename, "fileType": file_type, "status": "UPLOADED"}, status=201)
+    return _response({"importId": job["id"], "filename": job["filename"], "fileType": job["fileType"], "status": "UPLOADED"}, status=201)
+
+
+@certificate_api.post("/imports/google-sheet")
+def create_google_sheet_import():
+    """Import a public Google Sheet as CSV without storing Google credentials."""
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    body = request.get_json(silent=True) or {}
+    source_url = str(body.get("url") or "").strip()
+    if not source_url:
+        return _error("URL_REQUIRED", "A Google Sheets URL is required.", 422)
+    parsed = urlparse(source_url)
+    if parsed.scheme not in ("https",) or parsed.netloc.lower() not in {"docs.google.com", "www.docs.google.com"}:
+        return _error("INVALID_GOOGLE_SHEET_URL", "Only docs.google.com Google Sheets URLs are supported.", 422)
+    parts = [part for part in parsed.path.split("/") if part]
+    try:
+        sheet_idx = parts.index("d")
+        spreadsheet_id = parts[sheet_idx + 1]
+    except (ValueError, IndexError):
+        return _error("INVALID_GOOGLE_SHEET_URL", "Use a Google Sheets URL containing /spreadsheets/d/<sheet-id>/...", 422)
+    qs = parse_qs(parsed.fragment.lstrip("#"))
+    gid = qs.get("gid", [None])[0]
+    if not gid:
+        gid = parse_qs(parsed.query).get("gid", ["0"])[0]
+    export_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid or '0'}"
+    try:
+        response = requests.get(export_url, timeout=20, allow_redirects=True, headers={"User-Agent": "CertificatePortal/1.0"})
+        if response.status_code != 200:
+            return _error("GOOGLE_SHEET_FETCH_FAILED", "Google Sheet could not be downloaded. Make the sheet accessible to anyone with the link and try again.", 422, {"status": response.status_code})
+        content_type = (response.headers.get("content-type") or "").lower()
+        raw = response.content
+        if not raw or ("text/html" in content_type and b"Google" in raw[:5000]):
+            return _error("GOOGLE_SHEET_NOT_PUBLIC", "The Google Sheet is not publicly readable. Set General access to anyone with the link as Viewer.", 422)
+        # Validate CSV before persisting it.
+        columns, rows = _parse_csv_text(_decode_csv(raw))
+        if not columns or not rows:
+            return _error("GOOGLE_SHEET_EMPTY", "The selected Google Sheet tab contains no readable rows.", 422)
+        job = _create_import_job(f"Google Sheet {spreadsheet_id}.csv", raw, "CSV")
+        job["sourceType"] = "GOOGLE_SHEET"
+        job["sourceUrl"] = source_url
+        job["columns"], job["rawRows"] = columns, rows
+        _save_state()
+        return _response({"importId": job["id"], "filename": job["filename"], "fileType": "CSV", "status": "UPLOADED", "sourceType": "GOOGLE_SHEET", "totalRecords": len(rows)}, status=201)
+    except requests.RequestException as exc:
+        return _error("GOOGLE_SHEET_FETCH_FAILED", f"Could not reach Google Sheets: {exc}", 422)
+    except (UnicodeDecodeError, ValueError) as exc:
+        return _error("GOOGLE_SHEET_INVALID", str(exc), 422)
 
 
 @certificate_api.get("/imports")
@@ -785,14 +891,31 @@ def templates():
     # certificate template after a storage migration or accidental file loss.
     available = []
     stale_ids = []
+    dimensions_changed = False
     for template in portal_state["templates"]:
         stored = db.load_file(f"template:{template['id']}")
         if stored is None:
             stale_ids.append(template["id"])
             continue
+        if not template.get("pageWidth") or not template.get("pageHeight"):
+            try:
+                extension = str(template.get("fileType") or Path(template.get("name") or "").suffix).lower().lstrip(".")
+                if extension == "pdf":
+                    reader = PdfReader(io.BytesIO(stored["data"]))
+                    if reader.pages:
+                        template["pageWidth"] = float(reader.pages[0].mediabox.width)
+                        template["pageHeight"] = float(reader.pages[0].mediabox.height)
+                else:
+                    size = ImageReader(io.BytesIO(stored["data"])).getSize()
+                    if size[0] and size[1]:
+                        template["pageWidth"] = 842.0
+                        template["pageHeight"] = 842.0 * float(size[1]) / float(size[0])
+                dimensions_changed = True
+            except Exception:
+                pass
         available.append(template)
 
-    if stale_ids:
+    if stale_ids or dimensions_changed:
         portal_state["templates"] = available
         active_id = portal_state["settings"].get("activeTemplateId")
         if active_id not in {item["id"] for item in available}:
@@ -833,10 +956,26 @@ def create_template():
     template_id = f"tpl_{uuid.uuid4().hex[:12]}"
     filename = f"{template_id}.{extension}"
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    page_width, page_height = 842.0, 595.0
+    try:
+        if extension == "pdf":
+            reader = PdfReader(io.BytesIO(raw_template))
+            if reader.pages:
+                page_width = float(reader.pages[0].mediabox.width)
+                page_height = float(reader.pages[0].mediabox.height)
+        else:
+            image_reader = ImageReader(io.BytesIO(raw_template))
+            iw, ih = image_reader.getSize()
+            if iw and ih:
+                page_width = 842.0
+                page_height = page_width * float(ih) / float(iw)
+    except Exception:
+        pass
     db.save_file(f"template:{template_id}", filename, raw_template, content_type)
     item = {"id": template_id, "name": request.form.get("name") or uploaded.filename,
             "fileType": extension.upper(), "filePath": filename, "previewUrl": f"/api/v1/templates/{template_id}/file",
-            "active": not portal_state["templates"], "uploadedAt": _now(), "usageCount": 0, "fields": []}
+            "pageWidth": page_width, "pageHeight": page_height,
+            "active": not portal_state["templates"], "uploadedAt": _now(), "usageCount": 0, "fields": [], "version": 1, "versions": []}
     portal_state["templates"].append(item)
     if item["active"]:
         portal_state["settings"]["activeTemplateId"] = template_id
@@ -883,10 +1022,77 @@ def update_template_fields(template_id):
     fields = (request.get_json(silent=True) or {}).get("fields")
     if not isinstance(fields, list):
         return _error("INVALID_FIELDS", "Fields must be an array.", 422)
+    previous = item.get("fields") or []
+    versions = item.setdefault("versions", [])
+    next_version = int(item.get("version") or 1)
+    if previous != fields:
+        versions.append({"version": next_version, "savedAt": _now(), "fields": previous})
+        versions[:] = versions[-10:]
+        next_version += 1
     item["fields"] = fields
+    item["version"] = next_version
     _save_state()
-    _audit("TEMPLATE_UPDATED", item["name"])
-    return _response(item)
+    _audit("TEMPLATE_UPDATED", item["name"], details=f"Template version {next_version} saved.")
+    return _response(item, message=f"Template saved as version {next_version}.")
+
+
+@certificate_api.get("/templates/<template_id>/versions")
+def template_versions(template_id):
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
+    if not item:
+        return _error("NOT_FOUND", "Template not found.", 404)
+    current = {"version": int(item.get("version") or 1), "savedAt": item.get("updatedAt") or item.get("uploadedAt"), "current": True, "fields": item.get("fields") or []}
+    history = list(reversed(item.get("versions") or []))
+    return _response([current] + [{**v, "current": False} for v in history])
+
+
+@certificate_api.post("/templates/<template_id>/versions/<int:version>/restore")
+def restore_template_version(template_id, version):
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
+    if not item:
+        return _error("NOT_FOUND", "Template not found.", 404)
+    snapshot = next((v for v in item.get("versions") or [] if int(v.get("version", -1)) == version), None)
+    if not snapshot:
+        return _error("VERSION_NOT_FOUND", f"Template version {version} was not found.", 404)
+    current = item.get("fields") or []
+    versions = item.setdefault("versions", [])
+    current_version = int(item.get("version") or 1)
+    versions.append({"version": current_version, "savedAt": _now(), "fields": current})
+    versions[:] = versions[-10:]
+    item["fields"] = snapshot.get("fields") or []
+    item["version"] = current_version + 1
+    _save_state()
+    _audit("TEMPLATE_VERSION_RESTORED", item["name"], details=f"Restored version {version} as new version {item['version']}.")
+    return _response(item, message=f"Version {version} restored as version {item['version']}.")
+
+
+@certificate_api.post("/templates/<template_id>/preview")
+def template_preview(template_id):
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    item = next((t for t in portal_state["templates"] if t["id"] == template_id), None)
+    if not item:
+        return _error("NOT_FOUND", "Template not found.", 404)
+    body = request.get_json(silent=True) or {}
+    participant = body.get("participant") or {}
+    sample = {
+        "certificateId": str(participant.get("certificateId") or "PREVIEW-001"),
+        "participantName": str(participant.get("name") or "Preview Participant"),
+        "participantEmail": str(participant.get("email") or "preview@example.com"),
+        "participantStudentId": str(participant.get("studentId") or "STUDENT-001"),
+        "participantRollNumber": str(participant.get("rollNumber") or "ROLL-001"),
+        "eventName": str(participant.get("eventName") or portal_state.get("settings", {}).get("eventName") or "Certificate Event"),
+        "issueDate": str(participant.get("date") or portal_state.get("settings", {}).get("issueDate") or datetime.now(timezone.utc).date().isoformat()),
+    }
+    try:
+        output = _render_certificate(sample, item, store=False)
+        return send_file(io.BytesIO(output), download_name=f"{item['name']}-preview.pdf", mimetype="application/pdf")
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _error("PREVIEW_FAILED", str(exc), 422)
 
 
 @certificate_api.delete("/templates/<template_id>")
@@ -980,32 +1186,38 @@ def lookup_certificate_by_identifier(identifier):
     return _response({"participant": participant, "certificate": certificate, "status": certificate["status"] if certificate else "PENDING"})
 
 
-@certificate_api.post("/certificates/lookup/<identifier>/approve")
-def approve_certificate_by_identifier(identifier):
-    """Approve, generate, and email a certificate in one operation."""
-    if not _require_admin():
-        return _error("UNAUTHORIZED", "Authentication required.", 401)
-    participant = _find_participant_for_identifier(identifier)
-    if not participant:
-        return _error("NOT_FOUND", "Participant not found.", 404)
-    item = next((c for c in portal_state["certificates"] if c.get("participantId") == participant.get("id")), None)
-    if not item:
-        return _error("NOT_FOUND", "Certificate not found.", 404)
-    if item["status"] != "PENDING":
-        return _error("INVALID_STATE", "Only pending certificates can be approved.", 422)
+def _approve_generate_send(item, comment=""):
+    """Approve a pending certificate, generate its PDF, and email it.
 
-    item.update({"status": "APPROVED", "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"),
-                 "approvedAt": _now(), "approvalComment": (request.get_json(silent=True) or {}).get("comment", "")})
+    This is the single production workflow used by the admin approval action.
+    Every stage persists its state so failures are visible and retryable.
+    """
+    if item.get("status") != "PENDING":
+        raise ValueError("Only pending certificates can be approved.")
+
+    participant_name = str(item.get("participantName") or "").strip()
+    participant_email = str(item.get("participantEmail") or "").strip()
+    if not participant_name:
+        raise ValueError("Participant name is empty; approval was stopped.")
+    if not participant_email or "@" not in participant_email:
+        raise ValueError("Participant email is missing or invalid; approval was stopped.")
+
+    item.update({
+        "status": "APPROVED",
+        "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"),
+        "approvedAt": _now(),
+        "approvalComment": comment or "",
+        "failureReason": "",
+    })
     _save_state()
     _audit("CERTIFICATE_APPROVED", item["certificateId"])
 
-    # The frontend action is named "Approve & Send", so this endpoint must
-    # actually generate the personalized PDF and deliver it by email.
-    template = next((t for t in portal_state["templates"] if t["id"] == item.get("templateId")), None)
+    template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+    template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
     if not template:
-        item.update({"status": "FAILED", "failureReason": "Active certificate template not found."})
+        item.update({"status": "FAILED", "failureReason": "Certificate template not found. Upload and activate a certificate template first."})
         _save_state()
-        return _error("GENERATION_FAILED", "Certificate template not found.", 422)
+        raise RuntimeError(item["failureReason"])
 
     try:
         file_key = _render_certificate(item, template)
@@ -1013,7 +1225,11 @@ def approve_certificate_by_identifier(identifier):
             "status": "GENERATED",
             "generatedAt": _now(),
             "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download",
+            "templateId": template.get("id", template_id),
+            "templateName": template.get("name", ""),
+            "failureReason": "",
         })
+        _save_state()
         _audit("CERTIFICATE_GENERATED", item["certificateId"])
 
         stored_certificate = db.load_file(file_key)
@@ -1026,8 +1242,8 @@ def approve_certificate_by_identifier(identifier):
             "id": email_job_id,
             "jobId": email_job_id,
             "certificateId": item["certificateId"],
-            "recipient": item["participantEmail"],
-            "studentName": item.get("participantName", ""),
+            "recipient": participant_email,
+            "studentName": participant_name,
             "status": "PROCESSING",
             "createdAt": _now(),
             "sentAt": None,
@@ -1040,42 +1256,65 @@ def approve_certificate_by_identifier(identifier):
         _save_state()
 
         _deliver_certificate_email(item, stored_certificate, subject, body)
-        job.update({"status": "SENT", "sentAt": _now()})
-        item.update({"status": "SENT", "sentAt": job["sentAt"], "emailDeliveryStatus": "SENT"})
+        sent_at = _now()
+        job.update({"status": "SENT", "sentAt": sent_at, "error": ""})
+        item.update({"status": "SENT", "sentAt": sent_at, "emailDeliveryStatus": "SENT", "failureReason": ""})
         _audit("EMAIL_SENT", item["certificateId"])
         _save_state()
+        return item, job
+    except Exception as exc:
+        item.update({"status": "FAILED", "emailDeliveryStatus": "FAILED", "failureReason": str(exc)})
+        if "job" in locals():
+            job.update({"status": "FAILED", "error": str(exc)})
+        _audit("CERTIFICATE_WORKFLOW_FAILED", item["certificateId"], "FAILED", str(exc))
+        _save_state()
+        raise
 
+
+@certificate_api.post("/certificates/lookup/<identifier>/approve")
+def approve_certificate_by_identifier(identifier):
+    """Approve, generate, and email a certificate in one operation."""
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    participant = _find_participant_for_identifier(identifier)
+    if not participant:
+        return _error("NOT_FOUND", "Participant not found.", 404)
+    item = next((c for c in portal_state["certificates"] if c.get("participantId") == participant.get("id")), None)
+    if not item:
+        return _error("NOT_FOUND", "Certificate not found. Mark the participant eligible first.", 404)
+    try:
+        item, job = _approve_generate_send(item, (request.get_json(silent=True) or {}).get("comment", ""))
         return _response({
             "participant": participant,
             "certificate": item,
             "sentToEmail": item["participantEmail"],
-            "emailJobId": email_job_id,
+            "emailJobId": job["jobId"],
         }, message="Certificate approved, generated, and emailed successfully.")
-    except (OSError, smtplib.SMTPException, RuntimeError, ValueError) as exc:
-        item.update({"status": "FAILED", "emailDeliveryStatus": "FAILED", "failureReason": str(exc)})
-        if "email_job_id" in locals():
-            job.update({"status": "FAILED", "error": str(exc)})
-        _audit("EMAIL_FAILED", item["certificateId"], "FAILED", str(exc))
-        _save_state()
-        return _error("EMAIL_FAILED", str(exc), 502)
+    except ValueError as exc:
+        return _error("INVALID_STATE", str(exc), 422)
+    except (RuntimeError, OSError, smtplib.SMTPException) as exc:
+        return _error("CERTIFICATE_WORKFLOW_FAILED", str(exc), 502)
 
 
 @certificate_api.post("/certificates/<certificate_id>/approve")
 def approve_certificate(certificate_id):
+    """One-click admin workflow: approve -> generate PDF -> email."""
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
-    item = _find_certificate(certificate_id)
-    if not item:
-        item = _find_certificate_for_participant(certificate_id)
+    item = _find_certificate(certificate_id) or _find_certificate_for_participant(certificate_id)
     if not item:
         return _error("NOT_FOUND", "Certificate not found.", 404)
-    if item["status"] != "PENDING":
-        return _error("INVALID_STATE", "Only pending certificates can be approved.", 422)
-    item.update({"status": "APPROVED", "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"),
-                 "approvedAt": _now(), "approvalComment": (request.get_json(silent=True) or {}).get("comment", "")})
-    _save_state()
-    _audit("CERTIFICATE_APPROVED", item["certificateId"])
-    return _response(item)
+    try:
+        item, job = _approve_generate_send(item, (request.get_json(silent=True) or {}).get("comment", ""))
+        return _response({
+            "certificate": item,
+            "emailJobId": job["jobId"],
+            "sentToEmail": item.get("participantEmail", ""),
+        }, message="Certificate approved, generated, and emailed successfully.")
+    except ValueError as exc:
+        return _error("INVALID_STATE", str(exc), 422)
+    except (RuntimeError, OSError, smtplib.SMTPException) as exc:
+        return _error("CERTIFICATE_WORKFLOW_FAILED", str(exc), 502)
 
 
 @certificate_api.post("/certificates/<certificate_id>/reject")
@@ -1094,36 +1333,124 @@ def reject_certificate(certificate_id):
 
 @certificate_api.post("/certificates/bulk-approve")
 def bulk_approve():
+    """Run the same complete workflow for every selected pending certificate."""
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     ids = (request.get_json(silent=True) or {}).get("certificateIds", [])
     results, approved = [], 0
     for identifier in ids:
-        item = _find_certificate(identifier)
-        if item and item["status"] == "PENDING":
-            item.update({"status": "APPROVED", "approvedBy": os.getenv("ADMIN_EMAIL", "administrator"), "approvedAt": _now()})
-            results.append({"id": identifier, "status": "APPROVED"})
+        item = _find_certificate(identifier) or _find_certificate_for_participant(identifier)
+        if not item:
+            results.append({"id": identifier, "status": "FAILED", "reason": "Certificate not found."})
+            continue
+        try:
+            item, job = _approve_generate_send(item)
             approved += 1
-        else:
-            results.append({"id": identifier, "status": "FAILED", "reason": "Certificate is missing or not pending."})
+            results.append({"id": identifier, "status": item.get("status", "SENT"), "emailJobId": job["jobId"], "sentToEmail": item.get("participantEmail", "")})
+        except (ValueError, RuntimeError, OSError, smtplib.SMTPException) as exc:
+            results.append({"id": identifier, "status": "FAILED", "reason": str(exc)})
+
+    failed = len(ids) - approved
+    return _response({
+        "total": len(ids),
+        "approved": approved,
+        "approvedCount": approved,
+        "failed": failed,
+        "sentCount": approved,
+        "results": results,
+    }, message=f"Completed {approved} of {len(ids)} certificate workflows.")
+
+
+@certificate_api.post("/certificates/bulk-generate")
+def bulk_generate():
+    if not _require_admin():
+        return _error("UNAUTHORIZED", "Authentication required.", 401)
+    ids = (request.get_json(silent=True) or {}).get("certificateIds", [])
+    completed = 0
+    results = []
+    for identifier in ids:
+        item = _find_certificate(identifier) or _find_certificate_for_participant(identifier)
+        if not item:
+            results.append({"id": identifier, "status": "FAILED", "reason": "Certificate not found."})
+            continue
+        try:
+            if item.get("status") not in ("APPROVED", "FAILED"):
+                raise ValueError("Certificate must be approved before generation.")
+            template_id = item.get("templateId") or portal_state.get("settings", {}).get("activeTemplateId") or ""
+            template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
+            if not template:
+                raise RuntimeError("Certificate template not found.")
+            file_key = _render_certificate(item, template)
+            item.update({"status": "GENERATED", "generatedAt": _now(), "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download", "failureReason": ""})
+            completed += 1
+            results.append({"id": identifier, "status": "GENERATED", "fileKey": file_key})
+        except (ValueError, RuntimeError, OSError) as exc:
+            item.update({"status": "FAILED", "failureReason": str(exc)})
+            results.append({"id": identifier, "status": "FAILED", "reason": str(exc)})
     _save_state()
-    return _response({"total": len(ids), "approved": approved, "approvedCount": approved,
-                      "failed": len(ids) - approved, "results": results})
+    return _response({"count": completed, "results": results, "filename": "certificates.zip"}, message=f"Generated {completed} certificate(s).")
 
 
-def _render_certificate(item, template):
+def _field_font_name(field):
+    family = str(field.get("fontFamily") or "Inter")
+    style = str(field.get("fontStyle") or "normal").strip().lower()
+    weight = str(field.get("fontWeight") or "normal").strip().lower()
+    bold = weight in {"bold", "semibold"} or style in {"bold", "bold italic"}
+    italic = style in {"italic", "bold italic"}
+    families = {
+        "Cinzel": "CertCinzel",
+        "Playfair Display": "CertPlayfair",
+        "Inter": "CertInter",
+        "Plus Jakarta Sans": "CertJakarta",
+        "Great Vibes": "CertVibes",
+    }
+    base = families.get(family, "CertInter")
+    suffix = "-BoldItalic" if bold and italic else "-Bold" if bold else "-Italic" if italic else ""
+    candidate = base + suffix
+    if candidate in pdfmetrics.getRegisteredFontNames():
+        return candidate
+    return base if base in pdfmetrics.getRegisteredFontNames() else "Helvetica"
+
+
+def _draw_field(overlay, field, value, width, height):
+    if field.get("visible", True) is False or value == "":
+        return
+    raw_key = field.get("key") or field.get("fieldKey") or ""
+    key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
+    aliases = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}
+    key = aliases.get(key, key)
+    x = max(0.0, min(100.0, float(field.get("xPercent", field.get("x", 50))))) / 100.0 * width
+    center_y = height - (max(0.0, min(100.0, float(field.get("yPercent", field.get("y", 50))))) / 100.0 * height)
+    overlay.setFillColor(field.get("color", "#111827"))
+    font_name = _field_font_name(field)
+    font_size = max(1.0, float(field.get("fontSize", 24)))
+    overlay.setFont(font_name, font_size)
+    # The editor defines Y as the vertical center of the text box. ReportLab's
+    # drawString/drawCentredString use a baseline, so convert the center anchor
+    # to a baseline using the selected font's real ascent/descent metrics.
+    try:
+        ascent, descent = pdfmetrics.getAscentDescent(font_name, font_size)
+        y = center_y - ((ascent + descent) / 2.0)
+    except Exception:
+        y = center_y - font_size * 0.35
+    alignment = field.get("textAlign", "center")
+    if alignment == "left":
+        overlay.drawString(x, y, value)
+    elif alignment == "right":
+        overlay.drawRightString(x, y, value)
+    else:
+        overlay.drawCentredString(x, y, value)
+
+
+def _render_certificate(item, template, store=True):
     if PdfReader is None or canvas is None:
         raise RuntimeError("Certificate rendering dependencies are not installed.")
-
-    # Never generate/send a certificate with an empty recipient name.
     participant_name = str(item.get("participantName") or item.get("participant", {}).get("name") or "").strip()
     if not participant_name:
         raise RuntimeError("Participant name is empty; certificate generation was stopped.")
-
     stored_template = db.load_file(f"template:{template['id']}")
     if not stored_template:
-        raise RuntimeError("Template file not found.")
-    source = io.BytesIO(stored_template["data"])
+        raise RuntimeError("Template file not found in persistent storage.")
     fields = template.get("fields") or []
     normalized_field_keys = set()
     for f in fields:
@@ -1131,138 +1458,62 @@ def _render_certificate(item, template):
         k = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
         normalized_field_keys.add({"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME"}.get(k, k))
     if "NAME" not in normalized_field_keys:
-        raise RuntimeError("Certificate template has no Participant Name field. Open Template Editor, add 'Participant Name', position it, and save before generating.")
-    font_map = {
-        "Cinzel": "Helvetica-Bold",
-        "Playfair Display": "Times-Roman",
-        "Inter": "Helvetica",
-        "Plus Jakarta Sans": "Helvetica",
-        "Great Vibes": "Times-Italic",
-        "Helvetica": "Helvetica",
-        "Helvetica-Bold": "Helvetica-Bold",
-        "Times-Roman": "Times-Roman",
-        "Times-Italic": "Times-Italic",
+        raise RuntimeError("Certificate template has no Participant Name field. Add Participant Name and save the template before generating.")
+    values = {
+        "NAME": participant_name,
+        "EMAIL": str(item.get("participantEmail") or ""),
+        "STUDENT_ID": str(item.get("participantStudentId") or ""),
+        "ROLL_NO": str(item.get("participantRollNumber") or ""),
+        "EVENT_NAME": str(item.get("eventName") or ""),
+        "DATE": str(item.get("issueDate") or ""),
+        "CERTIFICATE_ID": str(item.get("certificateId") or ""),
     }
-    style_map = {
-        "normal": "",
-        "italic": "-Oblique",
-        "bold": "-Bold",
-        "bold italic": "-BoldOblique",
-    }
-    if template["fileType"] == "PDF":
+    source = io.BytesIO(stored_template["data"])
+    extension = str(template.get("fileType") or "").lower()
+    if extension == "pdf":
         reader = PdfReader(source)
-        page = reader.pages[0]
-        width = float(page.mediabox.width)
-        height = float(page.mediabox.height)
+        if not reader.pages:
+            raise RuntimeError("Certificate template PDF has no pages.")
+        base_page = reader.pages[0]
+        width = float(base_page.mediabox.width)
+        height = float(base_page.mediabox.height)
         packet = io.BytesIO()
         overlay = canvas.Canvas(packet, pagesize=(width, height))
-        values = {"NAME": participant_name, "EMAIL": str(item.get("participantEmail") or ""),
-                  "STUDENT_ID": str(item.get("participantStudentId") or ""), "ROLL_NO": str(item.get("participantRollNumber") or ""),
-                  "EVENT_NAME": str(item.get("eventName") or ""), "DATE": str(item.get("issueDate") or ""), "CERTIFICATE_ID": str(item.get("certificateId") or "")}
         for field in fields:
-            if field.get("visible", True) is False:
-                continue
             raw_key = field.get("key") or field.get("fieldKey") or ""
             key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
-            aliases = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}
-            key = aliases.get(key, key)
-            value = values.get(key, "")
-            x, y = float(field.get("xPercent", field.get("x", 50))) / 100 * width, (100 - float(field.get("yPercent", field.get("y", 50)))) / 100 * height
-            overlay.setFillColor(field.get("color", "#111827"))
-            base_font = font_map.get(field.get("fontFamily"), "Helvetica")
-            style = str(field.get("fontStyle") or "normal").lower()
-            weight = str(field.get("fontWeight") or "normal").lower()
-            if base_font == "Helvetica":
-                if style == "bold italic" or (weight == "bold" and style == "italic"):
-                    font_name = "Helvetica-BoldOblique"
-                elif style == "italic":
-                    font_name = "Helvetica-Oblique"
-                elif weight in ("bold", "semibold"):
-                    font_name = "Helvetica-Bold"
-                else:
-                    font_name = "Helvetica"
-            elif base_font == "Times-Roman":
-                if style == "bold italic" or (weight == "bold" and style == "italic"):
-                    font_name = "Times-BoldItalic"
-                elif style == "italic":
-                    font_name = "Times-Italic"
-                elif weight in ("bold", "semibold"):
-                    font_name = "Times-Bold"
-                else:
-                    font_name = "Times-Roman"
-            else:
-                font_name = base_font
-            overlay.setFont(font_name, max(1, float(field.get("fontSize", 24))))
-            alignment = field.get("textAlign", "center")
-            if alignment == "left":
-                overlay.drawString(x, y, value)
-            elif alignment == "right":
-                overlay.drawRightString(x, y, value)
-            else:
-                overlay.drawCentredString(x, y, value)
-        # showPage() guarantees the overlay always emits exactly one page,
-        # even when there are no visible fields to draw (e.g. a template
-        # with every placeholder removed or hidden). Without this, an
-        # all-blank overlay produces a zero-page PDF and the merge below
-        # raises IndexError.
+            key = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}.get(key, key)
+            _draw_field(overlay, field, values.get(key, ""), width, height)
         overlay.showPage()
         overlay.save()
         packet.seek(0)
-        page.merge_page(PdfReader(packet).pages[0])
+        base_page.merge_page(PdfReader(packet).pages[0])
         writer = PdfWriter()
-        writer.add_page(page)
+        writer.add_page(base_page)
         result = io.BytesIO()
         writer.write(result)
         output_bytes = result.getvalue()
     else:
+        image_reader = ImageReader(source)
+        iw, ih = image_reader.getSize()
+        if not iw or not ih:
+            raise RuntimeError("Certificate template image dimensions could not be read.")
+        width = float(template.get("pageWidth") or 842.0)
+        height = float(template.get("pageHeight") or (width * float(ih) / float(iw)))
         packet = io.BytesIO()
-        overlay = canvas.Canvas(packet, pagesize=(842, 595))
-        overlay.drawImage(ImageReader(source), 0, 0, width=842, height=595)
-        values = {"NAME": participant_name, "EMAIL": str(item.get("participantEmail") or ""), "STUDENT_ID": str(item.get("participantStudentId") or ""), "ROLL_NO": str(item.get("participantRollNumber") or ""), "EVENT_NAME": str(item.get("eventName") or ""), "DATE": str(item.get("issueDate") or ""), "CERTIFICATE_ID": str(item.get("certificateId") or "")}
+        overlay = canvas.Canvas(packet, pagesize=(width, height))
+        overlay.drawImage(image_reader, 0, 0, width=width, height=height, preserveAspectRatio=False, mask="auto")
         for field in fields:
-            if field.get("visible", True) is False:
-                continue
             raw_key = field.get("key") or field.get("fieldKey") or ""
             key = str(raw_key).strip().upper().replace("{{", "").replace("}}", "")
-            aliases = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}
-            key = aliases.get(key, key)
-            x, y = float(field.get("xPercent", field.get("x", 50))) / 100 * 842, (100 - float(field.get("yPercent", field.get("y", 50)))) / 100 * 595
-            overlay.setFillColor(field.get("color", "#111827"))
-            base_font = font_map.get(field.get("fontFamily"), "Helvetica")
-            style = str(field.get("fontStyle") or "normal").lower()
-            weight = str(field.get("fontWeight") or "normal").lower()
-            if base_font == "Helvetica":
-                if style == "bold italic" or (weight == "bold" and style == "italic"):
-                    font_name = "Helvetica-BoldOblique"
-                elif style == "italic":
-                    font_name = "Helvetica-Oblique"
-                elif weight in ("bold", "semibold"):
-                    font_name = "Helvetica-Bold"
-                else:
-                    font_name = "Helvetica"
-            elif base_font == "Times-Roman":
-                if style == "bold italic" or (weight == "bold" and style == "italic"):
-                    font_name = "Times-BoldItalic"
-                elif style == "italic":
-                    font_name = "Times-Italic"
-                elif weight in ("bold", "semibold"):
-                    font_name = "Times-Bold"
-                else:
-                    font_name = "Times-Roman"
-            else:
-                font_name = base_font
-            overlay.setFont(font_name, max(1, float(field.get("fontSize", 24))))
-            alignment = field.get("textAlign", "center")
-            value = values.get(key, "")
-            if alignment == "left":
-                overlay.drawString(x, y, value)
-            elif alignment == "right":
-                overlay.drawRightString(x, y, value)
-            else:
-                overlay.drawCentredString(x, y, value)
+            key = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}.get(key, key)
+            _draw_field(overlay, field, values.get(key, ""), width, height)
+        overlay.showPage()
         overlay.save()
         packet.seek(0)
         output_bytes = packet.read()
+    if not store:
+        return output_bytes
     file_key = f"certificate:{item['certificateId']}"
     db.save_file(file_key, f"{item['certificateId']}.pdf", output_bytes, "application/pdf")
     return file_key
@@ -1343,12 +1594,12 @@ def _render_email_content(item):
 
 
 def _send_via_brevo(item, stored_certificate, subject, body):
-    api_key = os.getenv("BREVO_API_KEY")
+    api_key = (os.getenv("BREVO_API_KEY") or "").strip()
     if not api_key:
         return False
     if requests is None:
         raise RuntimeError("The 'requests' package is required for Brevo email delivery.")
-    sender_email = os.getenv("BREVO_SENDER_EMAIL")
+    sender_email = (os.getenv("BREVO_SENDER_EMAIL") or "").strip()
     if not sender_email:
         raise RuntimeError("BREVO_SENDER_EMAIL is not configured.")
     sender_name = os.getenv("BREVO_SENDER_NAME") or portal_state.get("settings", {}).get("senderName") or sender_email
@@ -1358,22 +1609,22 @@ def _send_via_brevo(item, stored_certificate, subject, body):
         "to": [{"email": item["participantEmail"]}],
         "subject": subject,
         "textContent": body,
-        "attachment": [{
-            "content": base64.b64encode(stored_certificate["data"]).decode("ascii"),
-            "name": filename,
-        }],
+        "attachment": [{"content": base64.b64encode(stored_certificate["data"]).decode("ascii"), "name": filename}],
     }
     reply_to = portal_state.get("settings", {}).get("replyToAddress")
     if reply_to:
         payload["replyTo"] = {"email": reply_to}
-    response = requests.post(
-        BREVO_SEND_URL,
-        headers={"api-key": api_key, "Content-Type": "application/json", "Accept": "application/json"},
-        json=payload,
-        timeout=20,
-    )
+    try:
+        response = requests.post(
+            BREVO_SEND_URL,
+            headers={"api-key": api_key, "Content-Type": "application/json", "Accept": "application/json"},
+            json=payload,
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Brevo connection failed: {exc}") from exc
     if response.status_code >= 300:
-        detail = response.text[:300]
+        detail = response.text[:500]
         raise RuntimeError(f"Brevo API error ({response.status_code}): {detail}")
     return True
 
@@ -1421,8 +1672,10 @@ def send_certificate(certificate_id):
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     item = _find_certificate(certificate_id)
-    if not item or item["status"] not in ("GENERATED", "FAILED"):
+    if not item or item["status"] not in ("GENERATED", "FAILED", "SENT"):
         return _error("INVALID_STATE", "A generated certificate is required before sending.", 422)
+    if not str(item.get("participantEmail") or "").strip() or "@" not in str(item.get("participantEmail") or ""):
+        return _error("INVALID_EMAIL", "Participant email is missing or invalid.", 422)
 
     # A failed delivery can be retried using the same generated certificate.
     if item["status"] == "FAILED":

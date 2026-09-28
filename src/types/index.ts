@@ -55,6 +55,10 @@ export interface CertificateTemplate {
   usageCount: number;
   fields: TemplateFieldConfig[];
   previewThumbnail?: string;
+  pageWidth?: number;
+  pageHeight?: number;
+  version?: number;
+  versions?: Array<{ version: number; savedAt?: string; fields: TemplateFieldConfig[] }>;
 }
 
 export interface Certificate {

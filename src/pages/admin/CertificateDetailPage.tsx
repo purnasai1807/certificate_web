@@ -61,8 +61,11 @@ export const CertificateDetailPage: React.FC = () => {
       const res = await certificatesService.approveCertificate(cert.id);
       if (res.success) {
         confetti({ particleCount: 70, spread: 60, origin: { y: 0.7 } });
-        showToast('success', 'Certificate Approved', 'Authorized for vector synthesis.');
+        showToast('success', 'Certificate Sent', res.message || `Certificate generated and sent to ${res.data.sentToEmail}.`);
+        await loadData();
       }
+    } catch (err: any) {
+      showToast('error', 'Certificate Workflow Failed', err?.message || 'Approval, generation, or email delivery failed.');
     } finally {
       setIsActionLoading(false);
     }
@@ -76,7 +79,10 @@ export const CertificateDetailPage: React.FC = () => {
       if (res.success) {
         showToast('warning', 'Certificate Rejected', 'Certificate marked as rejected.');
         setRejectModalOpen(false);
+        await loadData();
       }
+    } catch (err: any) {
+      showToast('error', 'Rejection Failed', err?.message || 'Unable to reject this certificate.');
     } finally {
       setIsActionLoading(false);
     }
@@ -89,7 +95,10 @@ export const CertificateDetailPage: React.FC = () => {
       const res = await certificatesService.generateCertificate(cert.id);
       if (res.success) {
         showToast('success', 'PDF Synthesized', 'Personalized certificate generated.');
+        await loadData();
       }
+    } catch (err: any) {
+      showToast('error', 'Generation Failed', err?.message || 'Unable to generate the certificate.');
     } finally {
       setIsActionLoading(false);
     }
@@ -102,10 +111,10 @@ export const CertificateDetailPage: React.FC = () => {
       const res = await certificatesService.sendCertificate(cert.id);
       if (res.success) {
         showToast('success', 'Email Dispatched', `Certificate sent to ${cert.participantEmail}`);
-      } else {
-        const errText = typeof res.error === 'object' ? res.error?.message : (res.error || 'Failed to dispatch email.');
-        showToast('error', 'Delivery Failed', errText);
+        await loadData();
       }
+    } catch (err: any) {
+      showToast('error', 'Delivery Failed', err?.message || 'Failed to dispatch email.');
     } finally {
       setIsActionLoading(false);
     }
@@ -186,9 +195,13 @@ export const CertificateDetailPage: React.FC = () => {
 
           {(cert.status === 'APPROVED' || cert.status === 'GENERATED' || cert.status === 'SENT' || cert.status === 'EMAIL_QUEUED') && (
             <button
-              onClick={() => {
-                downloadSingleCertificatePdf(cert);
-                showToast('success', 'Certificate Downloaded', `PDF saved for ${cert.participantName}`);
+              onClick={async () => {
+                try {
+                  await downloadSingleCertificatePdf(cert);
+                    showToast('success', 'Certificate Downloaded', `PDF saved for ${cert.participantName}`);
+                } catch (err: any) {
+                  showToast('error', 'Download Failed', err?.message || 'Failed to download certificate.');
+                }
               }}
               className="px-4 py-2 rounded-xl bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-xs font-semibold hover:bg-purple-100 dark:hover:bg-purple-900/60 transition-colors flex items-center gap-1.5 shadow-sm"
               title="Download high-resolution vector PDF certificate"

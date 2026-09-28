@@ -9,12 +9,19 @@ export interface CertificateFilterOptions {
   limit?: number;
 }
 
+export interface ApprovalResponse {
+  certificate: Certificate;
+  emailJobId: string;
+  sentToEmail: string;
+}
+
 export interface BulkApproveResponse {
   total: number;
   approved: number;
   approvedCount: number;
   failed: number;
-  results: { id: string; status: 'APPROVED' | 'FAILED'; reason?: string }[];
+  sentCount: number;
+  results: { id: string; status: string; reason?: string; emailJobId?: string; sentToEmail?: string }[];
 }
 
 const query = (options: CertificateFilterOptions) => {
@@ -40,7 +47,7 @@ export const certificatesService = {
   },
 
   approveCertificate(id: string, comment?: string) {
-    return apiClient<Certificate>(`/certificates/${id}/approve`, {
+    return apiClient<ApprovalResponse>(`/certificates/${id}/approve`, {
       method: 'POST',
       body: JSON.stringify({ comment: comment || '' }),
     });

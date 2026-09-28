@@ -71,18 +71,23 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
 
   const fetchCertificates = async () => {
     setIsLoading(true);
-    const res = await certificatesService.getCertificates({
-      status: activeTab,
-      search: searchQuery,
-      page,
-      limit,
-    });
-    if (res.success) {
-      setCertificates(res.data.items);
-      setCounts(res.data.countsByStatus);
-      setPagination(res.data.pagination || { page, limit, total: res.data.total || 0, totalPages: Math.ceil((res.data.total || 0) / limit) });
+    try {
+      const res = await certificatesService.getCertificates({
+        status: activeTab,
+        search: searchQuery,
+        page,
+        limit,
+      });
+      if (res.success) {
+        setCertificates(res.data.items);
+        setCounts(res.data.countsByStatus);
+        setPagination(res.data.pagination || { page, limit, total: res.data.total || 0, totalPages: Math.ceil((res.data.total || 0) / limit) });
+      }
+    } catch (err: any) {
+      showToast('error', 'Certificates Could Not Load', err?.message || 'Unable to load certificate records.');
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -179,9 +184,9 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
   };
 
   // Single Certificate PDF Download
-  const handleSingleDownload = (cert: Certificate) => {
+  const handleSingleDownload = async (cert: Certificate) => {
     try {
-      downloadSingleCertificatePdf(cert);
+      await downloadSingleCertificatePdf(cert);
       showToast('success', 'Certificate Downloaded', `PDF certificate saved for ${cert.participantName}`);
     } catch (err: any) {
       showToast('error', 'Download Failed', err?.message || 'Failed to download certificate.');
@@ -195,10 +200,13 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
     try {
       const res = await certificatesService.approveCertificate(approveModalCert.id);
       if (res.success) {
-        showToast('success', 'Certificate Approved', res.message || 'Approved successfully.');
+        confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+        showToast('success', 'Certificate Sent', res.message || `Certificate approved, generated, and sent to ${res.data.sentToEmail}.`);
         setApproveModalCert(null);
         await fetchCertificates();
       }
+    } catch (err: any) {
+      showToast('error', 'Certificate Workflow Failed', err?.message || 'Approval, generation, or email delivery failed.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -216,6 +224,8 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
         setRejectionReason('');
         await fetchCertificates();
       }
+    } catch (err: any) {
+      showToast('error', 'Rejection Failed', err?.message || 'Unable to reject this certificate.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -229,15 +239,18 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
       const res = await certificatesService.bulkApproveCertificates(selectedIds);
       if (res.success) {
         confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+        const failed = res.data.failed || 0;
         showToast(
-          'success',
-          'Batch Approval Completed',
-          `Approved ${res.data.approvedCount} certificate requests.`
+          failed ? 'warning' : 'success',
+          failed ? 'Batch Completed With Errors' : 'Batch Approval Completed',
+          `${res.data.approvedCount} approved, generated, and emailed.${failed ? ` ${failed} failed; open Failed Ops for details.` : ''}`
         );
         setSelectedIds([]);
         setBulkModalOpen(false);
         await fetchCertificates();
       }
+    } catch (err: any) {
+      showToast('error', 'Batch Approval Failed', err?.message || 'Unable to process the selected certificates.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -246,13 +259,15 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
   // Generate Certificate
   const handleGenerate = async (cert: Certificate) => {
     setIsProcessingAction(true);
-    showToast('info', 'Generating Certificate', `Synthesizing personalized vector PDF for ${cert.participantName}...`);
+    showToast('info', 'Generating Certificate', `Creating the personalized PDF for ${cert.participantName}...`);
     try {
       const res = await certificatesService.generateCertificate(cert.id);
       if (res.success) {
         showToast('success', 'Generation Complete', `Certificate ready for ${cert.participantName}.`);
         await fetchCertificates();
       }
+    } catch (err: any) {
+      showToast('error', 'Generation Failed', err?.message || 'Unable to generate the certificate.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -267,10 +282,9 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
       if (res.success) {
         showToast('success', 'Email Delivered', `Certificate sent to ${cert.participantEmail}`);
         await fetchCertificates();
-      } else {
-        const errText = typeof res.error === 'object' ? res.error?.message : (res.error || 'Mail delivery failed.');
-        showToast('error', 'Email Failed', errText);
       }
+    } catch (err: any) {
+      showToast('error', 'Email Failed', err?.message || 'Mail delivery failed.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -282,9 +296,11 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
     try {
       const res = await certificatesService.retryCertificate(cert.id);
       if (res.success) {
-        showToast('success', 'Operation Recovered', `Certificate successfully regenerated.`);
+        showToast('success', 'Operation Recovered', 'Certificate successfully regenerated.');
         await fetchCertificates();
       }
+    } catch (err: any) {
+      showToast('error', 'Retry Failed', err?.message || 'Unable to retry this certificate.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -709,8 +725,8 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
             </div>
 
             <p className="text-slate-500 leading-relaxed">
-              After approval, the system will authorize generation of the personalized certificate and
-              queue it for delivery to the participant's registered email address.
+              Approve Certificate will authorize the record, generate the personalized PDF, and send it
+              to the participant's registered email address.
             </p>
 
             <div className="pt-2 flex justify-end gap-2">
@@ -727,7 +743,7 @@ export const CertificatesListPage: React.FC<CertificatesListPageProps> = ({ forc
                 disabled={isProcessingAction}
                 className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold transition-all shadow-md shadow-purple-600/20"
               >
-                {isProcessingAction ? 'Approving...' : 'Approve Certificate'}
+                {isProcessingAction ? 'Approving, Generating & Sending...' : 'Approve, Generate & Send'}
               </button>
             </div>
           </div>

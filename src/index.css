@@ -1,1 +1,23 @@
 @import "tailwindcss";
+/* Certificate editor fonts: bundled so preview and generated PDFs stay consistent. */
+@font-face{font-family:"Cinzel";src:url("/fonts/Cinzel-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Cinzel";src:url("/fonts/Cinzel-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Cinzel";src:url("/fonts/Cinzel-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Cinzel";src:url("/fonts/Cinzel-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:"Playfair Display";src:url("/fonts/PlayfairDisplay-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Playfair Display";src:url("/fonts/PlayfairDisplay-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Playfair Display";src:url("/fonts/PlayfairDisplay-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Playfair Display";src:url("/fonts/PlayfairDisplay-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:"Inter";src:url("/fonts/Inter-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Inter";src:url("/fonts/Inter-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Inter";src:url("/fonts/Inter-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Inter";src:url("/fonts/Inter-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:"Plus Jakarta Sans";src:url("/fonts/PlusJakartaSans-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Plus Jakarta Sans";src:url("/fonts/PlusJakartaSans-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Plus Jakarta Sans";src:url("/fonts/PlusJakartaSans-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Plus Jakarta Sans";src:url("/fonts/PlusJakartaSans-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:"Great Vibes";src:url("/fonts/GreatVibes-Regular.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Great Vibes";src:url("/fonts/GreatVibes-Bold.ttf") format("truetype");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"Great Vibes";src:url("/fonts/GreatVibes-Italic.ttf") format("truetype");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Great Vibes";src:url("/fonts/GreatVibes-BoldItalic.ttf") format("truetype");font-weight:700;font-style:italic;font-display:swap}
+

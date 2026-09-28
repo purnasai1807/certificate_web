@@ -244,6 +244,10 @@ export function saveStoredImportJob(job: ImportJob | null) {
 }
 
 export const importsService = {
+  async importGoogleSheet(url: string): Promise<ApiResponse<ImportUploadResponse & { sourceType?: string; totalRecords?: number }>> {
+    return apiClient('/imports/google-sheet', { method: 'POST', body: JSON.stringify({ url }) });
+  },
+
   async uploadAttendance(file: File): Promise<ApiResponse<ImportUploadResponse>> {
     const formData = new FormData();
     formData.append('file', file);
@@ -302,6 +306,18 @@ export const importsService = {
   async getImportHistory(): Promise<ApiResponse<ImportJob[]>> {
     const response = await apiClient<{ items: ImportJob[] }>('/imports');
     return { ...response, data: response.data?.items || [] };
+  },
+
+  async getLatestImport(): Promise<ApiResponse<ImportJob>> {
+    const response = await this.getImportHistory();
+    if (!response.success || !response.data?.length) {
+      return { success: false, data: null as unknown as ImportJob, error: response.error, message: response.message };
+    }
+    const latest = [...response.data].sort((a, b) =>
+      new Date(b.uploadedAt || '').getTime() - new Date(a.uploadedAt || '').getTime(),
+    )[0];
+    saveStoredImportJob(latest);
+    return { success: true, data: latest };
   },
 
   async downloadImportFile(importId: string, filename: string): Promise<void> {
