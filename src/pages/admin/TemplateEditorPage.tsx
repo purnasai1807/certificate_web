@@ -169,6 +169,9 @@ export const TemplateEditorPage: React.FC = () => {
     }
     setIsPreviewingPdf(true);
     try {
+      // Persist the exact design first. This prevents a fast Preview/Generate click
+      // from racing the 900ms autosave and rendering older typography/coordinates.
+      await templatesService.updateTemplateFields(template.id, template.fields, false);
       const blob = await templatesService.exactPreview(template.id, template.fields, {
         name: sampleParticipant?.name || 'Sample Participant',
         email: sampleParticipant?.email || '',

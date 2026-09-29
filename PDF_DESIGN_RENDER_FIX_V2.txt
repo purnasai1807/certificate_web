@@ -1,0 +1,16 @@
+PDF DESIGN RENDER FIX V2
+
+This patch makes certificate export use the same saved field design as the editor.
+
+Fixed:
+- exact font size in points (no page-size scaling during export)
+- selected font family and its bold/italic/bold-italic variant
+- style-preserving fallback when a script font lacks Latin glyphs
+- selected text color using explicit PDF HexColor conversion
+- left/center/right alignment
+- X/Y percentage anchors against the actual template page
+- exact PDF preview persists the current field layout before rendering
+- certificate generation and bulk generation use the currently active template so an old templateId cannot override the current design
+- email rendering continues to regenerate from the current active template
+
+Example: if Noto Sans Hebrew + Italic is selected for "A. Teja", the Latin fallback uses an italic face instead of silently reverting to regular Inter.

@@ -1454,10 +1454,7 @@ def bulk_generate():
         try:
             if item.get("status") not in ("APPROVED", "FAILED"):
                 raise ValueError("Certificate must be approved before generation.")
-            template_id = portal_state.get("settings", {}).get("activeTemplateId") or item.get("templateId") or ""
-            template = next((t for t in portal_state["templates"] if t.get("id") == template_id), None)
-            if not template:
-                raise RuntimeError("Certificate template not found.")
+            template = _current_template_for_certificate(item)
             file_key = _render_certificate(item, template)
             item.update({"status": "GENERATED", "generatedAt": _now(), "certificateUrl": f"/api/v1/certificates/{item['certificateId']}/download", "failureReason": ""})
             completed += 1
@@ -1539,32 +1536,67 @@ def _field_font_name(field):
     raise RuntimeError(f"Certificate font '{family}' is not available in the deployed font bundle.")
 
 
-def _find_font_for_char(ch, preferred_font):
-    """Find a registered font that can render a character, preferring the field font."""
-    candidates = [preferred_font, "CertInter", "CertNotoSans", "CertFreeSans", "CertFreeSerif"]
-    # Then try every registered font. This keeps script-specific fonts usable while
-    # preventing Latin names from disappearing when a script font has no Latin glyphs.
-    candidates.extend(n for n in pdfmetrics.getRegisteredFontNames() if n not in candidates)
-    for name in candidates:
-        try:
-            face = pdfmetrics.getFont(name).face
-            cmap = getattr(face, "charToGlyph", {})
-            if ch.isspace() or cmap.get(ord(ch), 0):
-                return name
-        except Exception:
-            continue
+def _font_variant_candidates(base, bold=False, italic=False):
+    """Return the requested family face followed by style-preserving fallbacks."""
+    suffixes = []
+    if bold and italic:
+        suffixes.append("-BoldItalic")
+    if bold:
+        suffixes.append("-Bold")
+    if italic:
+        suffixes.append("-Italic")
+    suffixes.append("")
+
+    out = []
+    for suffix in suffixes:
+        name = base + suffix
+        if name in pdfmetrics.getRegisteredFontNames() and name not in out:
+            out.append(name)
+
+    # Preserve the requested typography when a script font has no Latin glyphs.
+    fallback_bases = ("CertInter", "CertNotoSans", "CertFreeSans", "CertFreeSerif")
+    for fallback_base in fallback_bases:
+        for suffix in suffixes:
+            name = fallback_base + suffix
+            if name in pdfmetrics.getRegisteredFontNames() and name not in out:
+                out.append(name)
+    return out
+
+
+def _font_supports_char(font_name, ch):
+    if ch.isspace():
+        return True
+    try:
+        cmap = getattr(pdfmetrics.getFont(font_name).face, "charToGlyph", {})
+        return bool(cmap.get(ord(ch), 0))
+    except Exception:
+        return False
+
+
+def _find_font_for_char(ch, preferred_font, bold=False, italic=False):
+    """Choose a font that supports the character while preserving style/weight."""
+    for name in _font_variant_candidates(preferred_font, bold=bold, italic=italic):
+        if _font_supports_char(name, ch):
+            return name
+
+    # Last resort: search every registered font, but still prefer the requested
+    # bold/italic variant family order before arbitrary fonts.
+    registered = pdfmetrics.getRegisteredFontNames()
+    for name in registered:
+        if _font_supports_char(name, ch):
+            return name
     return preferred_font
 
 
-def _draw_text_with_fallback(overlay, text, x, y, font_name, font_size, alignment):
-    """Draw text while falling back per run when the selected font lacks glyphs."""
+def _draw_text_with_fallback(overlay, text, x, y, font_name, font_size, alignment, bold=False, italic=False):
+    """Draw text with per-run glyph fallback without losing bold/italic styling."""
     if not text:
         return
     runs = []
     current_font = None
     current_text = []
     for ch in text:
-        f = _find_font_for_char(ch, font_name)
+        f = _find_font_for_char(ch, font_name, bold=bold, italic=italic)
         if f != current_font:
             if current_text:
                 runs.append((current_font, "".join(current_text)))
@@ -1576,12 +1608,14 @@ def _draw_text_with_fallback(overlay, text, x, y, font_name, font_size, alignmen
         runs.append((current_font, "".join(current_text)))
 
     total_width = sum(pdfmetrics.stringWidth(t, f, font_size) for f, t in runs)
+    alignment = str(alignment or "center").lower()
     if alignment == "left":
         start_x = x
     elif alignment == "right":
         start_x = x - total_width
     else:
         start_x = x - total_width / 2.0
+
     cursor = start_x
     for f, t in runs:
         overlay.setFont(f, font_size)
@@ -1597,30 +1631,61 @@ def _draw_field(overlay, field, value, width, height, logical_width=842.0, logic
     aliases = {"FULL_NAME": "NAME", "PARTICIPANT_NAME": "NAME", "STUDENTNAME": "NAME", "ROLLNUMBER": "ROLL_NO", "STUDENTID": "STUDENT_ID", "EVENT": "EVENT_NAME", "CERTIFICATEID": "CERTIFICATE_ID"}
     key = aliases.get(key, key)
 
-    # The editor stores positions on a fixed 842x595 logical canvas. Scale those
-    # coordinates to the actual PDF page instead of silently changing the design
-    # when the uploaded PDF uses a different point size.
-    sx = width / float(logical_width or 842.0)
-    sy = height / float(logical_height or 595.0)
+    # The editor stores x/y as percentages of the displayed template page. The
+    # renderer uses the actual page dimensions, so the same percentages map to
+    # exactly the same anchor point on the PDF/image page.
     x_pct = max(0.0, min(100.0, float(field.get("xPercent", field.get("x", 50))))) / 100.0
     y_pct = max(0.0, min(100.0, float(field.get("yPercent", field.get("y", 50))))) / 100.0
-    x = x_pct * width
-    center_y = height - (y_pct * height)
-    overlay.setFillColor(field.get("color", "#111827"))
-    font_name = _field_font_name(field)
-    logical_font_size = max(1.0, float(field.get("fontSize", 24)))
-    font_size = logical_font_size * min(sx, sy)
-    overlay.setFont(font_name, font_size)
-    # The editor defines Y as the vertical center of the text box. ReportLab's
-    # drawString uses a baseline, so convert the center anchor using real metrics.
+    x = x_pct * float(width)
+    center_y = float(height) - (y_pct * float(height))
+
+    color = str(field.get("color") or "#111827").strip()
     try:
-        ascent, descent = pdfmetrics.getAscentDescent(font_name, font_size)
-        y = center_y - ((ascent + descent) / 2.0)
+        from reportlab.lib.colors import HexColor
+        overlay.setFillColor(HexColor(color))
+    except Exception:
+        overlay.setFillColor("#111827")
+
+    font_name = _field_font_name(field)
+    font_size = max(1.0, float(field.get("fontSize", 24)))
+    style = str(field.get("fontStyle") or "normal").strip().lower()
+    weight = str(field.get("fontWeight") or "normal").strip().lower()
+    bold = weight in {"bold", "semibold"} or style in {"bold", "bold italic"}
+    italic = style in {"italic", "bold italic"}
+
+    # Font size is stored in points and ReportLab also uses points. Do not scale
+    # it by page dimensions; doing so makes a 25pt editor value change on export.
+    alignment = str(field.get("textAlign") or field.get("alignment") or "center").lower()
+    try:
+        ascent_values = []
+        descent_values = []
+        for candidate in _font_variant_candidates(font_name, bold=bold, italic=italic):
+            try:
+                ascent, descent = pdfmetrics.getAscentDescent(candidate, font_size)
+                ascent_values.append(ascent)
+                descent_values.append(descent)
+            except Exception:
+                pass
+        if ascent_values:
+            ascent = max(ascent_values)
+            descent = min(descent_values)
+            y = center_y - ((ascent + descent) / 2.0)
+        else:
+            y = center_y - font_size * 0.35
     except Exception:
         y = center_y - font_size * 0.35
-    alignment = str(field.get("textAlign", "center") or "center").lower()
-    _draw_text_with_fallback(overlay, str(value), x, y, font_name, font_size, alignment)
 
+    _draw_text_with_fallback(
+        overlay,
+        str(value),
+        x,
+        y,
+        font_name,
+        font_size,
+        alignment,
+        bold=bold,
+        italic=italic,
+    )
 
 def _render_certificate_bytes(item, template):
     """Render a certificate using exactly the same code path used by generation.
@@ -1776,7 +1841,12 @@ def generate_certificate(certificate_id):
     if not _require_admin():
         return _error("UNAUTHORIZED", "Authentication required.", 401)
     item = _find_certificate(certificate_id)
-    template = next((t for t in portal_state["templates"] if t["id"] == item.get("templateId")), None) if item else None
+    template = None
+    if item:
+        try:
+            template = _current_template_for_certificate(item)
+        except RuntimeError:
+            template = None
     if not item or not template:
         return _error("NOT_FOUND", "Certificate or active template not found.", 404)
     if item["status"] not in ("APPROVED", "FAILED"):
